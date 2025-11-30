@@ -10,16 +10,42 @@ def load_ollama_config() -> dict:
     return config["ollama"]
 
 
-def generate_answer(query, context_chunks):
+def generate_answer(query, context_chunks, language="en"):
     context = "\n\n".join([chunk['page_content'] for chunk in context_chunks])
-    prompt = f"""You are an assistant for question-answering tasks. \
-Use the following pieces of retrieved context to answer the question. \
-If you don't know the answer, just say that you don't know. \
-Use three sentences maximum and keep the answer concise.\n\nQuestion: {query} \nContext: {context} \nAnswer:\n"""
+
+    prompt = f"""
+You are an expert AI participating in a Retrieval-Augmented Generation (RAG) competition.
+
+Your task:
+- Answer the question strictly using ONLY the retrieved context.
+- Do NOT use any outside knowledge.
+- Do NOT make assumptions or invent facts.
+- If the answer is not explicitly stated in the context, reply exactly:
+  "Insufficient information in the retrieved documents."
+
+Rules:
+1. Use at most three sentences.
+2. Be concise and precise.
+3. If multiple passages conflict, briefly summarize the conflict.
+
+Retrieved Context:
+{context}
+
+Question:
+{query}
+
+Final Answer:
+"""
+
     ollama_config = load_ollama_config()
     client = Client(host=ollama_config["host"])
-    response = client.generate(model=ollama_config["model"], prompt=prompt)
-    return response["response"]
+    response = client.generate(
+        model=ollama_config["model"],
+        prompt=prompt,
+        options={"temperature": 0.2}  # improves factual stability
+    )
+
+    return response["response"].strip()
 
 
 if __name__ == "__main__":

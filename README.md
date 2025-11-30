@@ -92,7 +92,7 @@ You can freely adjust `config_local.yaml` during development for convenience, wh
 
 ### Retrieval Parameters
 
-The same YAML file now contains a `retrieval` block that controls chunking (`chunk_size`, `chunk_overlap`), BM25 hyperparameters (`bm25.k1`, `bm25.b`), keyword re-ranking weights, and the final `top_k` fed into the granite4:3b generator. Tweak these values in `config_local.yaml` when experimenting with new retrieval strategies, and promote the proven settings to `config_submit.yaml` once you are ready to submit.
+The same YAML file now contains a `retrieval` block that controls chunking (`chunk_size`, `chunk_overlap`), BM25 hyperparameters (`bm25.k1`, `bm25.b`), keyword re-ranking weights, retrieval debug logging, and the final `top_k` fed into the granite4:3b generator. Set `debug: true` locally to print per-query retrieval breakdowns (scores, metadata previews, keywords) when tuning recall. Tweak these values in `config_local.yaml` when experimenting with new retrieval strategies, and promote the proven settings to `config_submit.yaml` once you are ready to submit.
 
 ## How to Run
 
