@@ -1,4 +1,14 @@
 from ollama import Client
+from config import load_config
+
+
+def load_ollama_config() -> dict:
+    config = load_config()
+    assert "ollama" in config, "Ollama configuration not found in config file."
+    assert "host" in config["ollama"], "Ollama host not specified in config file."
+    assert "model" in config["ollama"], "Ollama model not specified in config file."
+    return config["ollama"]
+
 
 def generate_answer(query, context_chunks):
     context = "\n\n".join([chunk['page_content'] for chunk in context_chunks])
@@ -6,12 +16,10 @@ def generate_answer(query, context_chunks):
 Use the following pieces of retrieved context to answer the question. \
 If you don't know the answer, just say that you don't know. \
 Use three sentences maximum and keep the answer concise.\n\nQuestion: {query} \nContext: {context} \nAnswer:\n"""
-    try:
-        client = Client()
-        response = client.generate(model="granite4:3b", prompt=prompt, stream=False)
-        return response.get("response", "No response from model.")
-    except Exception as e:
-        return f"Error using Ollama Python client: {e}"
+    ollama_config = load_ollama_config()
+    client = Client(host=ollama_config["host"])
+    response = client.generate(model=ollama_config["model"], prompt=prompt)
+    return response["response"]
 
 
 if __name__ == "__main__":
@@ -22,4 +30,4 @@ if __name__ == "__main__":
         {"page_content": "The Eiffel Tower is located in Paris, the capital city of France."}
     ]
     answer = generate_answer(query, context_chunks)
-    print("Generated Answer:", answer)
+    print("Gener：ated Answer:", answer)

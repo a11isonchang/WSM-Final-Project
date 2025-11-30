@@ -1,0 +1,27 @@
+# Operating system
+.DS_Store
+Thumbs.db
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+*.pyc
+.venv/
+.env/
+
+# Editor settings
+.vscode/
+.idea/
+
+# Local configs & secrets
+configs/config_local.yaml
+*.env
+
+# Data & outputs
+predictions/
+outputs/
+logs/
+
+# Ollama artifacts
+*.ollama
+AGENTS.md
