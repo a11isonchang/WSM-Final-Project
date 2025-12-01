@@ -1,10 +1,10 @@
+python - <<'EOF'
 from sentence_transformers import SentenceTransformer
+import os
 
-model_name = "intfloat/multilingual-e5-small"
-save_dir = "models/multilingual-e5-small"  # 你自己決定資料夾位置
+model = SentenceTransformer("all-MiniLM-L6-v2")
+save_dir = "My_RAG/models/all_minilm_l6"
+mod:qui.save(save_dir)
 
-model = SentenceTransformer(model_name)
-model.save(save_dir)
-
-print("saved to", save_dir)
-
+print("Saved files:", os.listdir(save_dir))
+EOF
