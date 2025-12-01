@@ -28,7 +28,7 @@ retrieval:
 
   # Dense re-ranking configuration (runs after lexical stage)
   dense:
-    model: "./My_RAG/models/multilingual-e5-small"
+    model: "./My_RAG/models/all_minilm_l6"
     normalize: true
     batch_size: 32
     query_prefix: "query: "
