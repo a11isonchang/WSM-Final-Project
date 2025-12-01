@@ -1,3 +1,14 @@
+# 重要‼️
+## 修改config以避免抓不到ollama
+如果直接用git clone的方式抓下來的話，要記得去`WSM-Final-Project/config`裡將`config_submit.yaml`中的
+```yaml
+host: "http://ollama-gateway:11434"
+```
+改為
+```yaml
+host: "http://localhost:11434"
+```
+最好能夠新複製一個`config_submit.yaml`並重新命名為 `config_local.yaml`來修改，這樣才能有一個原始的設定檔參考（`config_local.yaml`不會被推上github）
 # WSM Final Project Sample Code
 
 This repository simulates the execution workflow of the online judge system, including running inference, validating outputs, and generating detailed logs.
