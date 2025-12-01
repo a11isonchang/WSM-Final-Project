@@ -10,9 +10,9 @@ retrieval:
   
   # Hybrid Retrieval Weights (a*TF-IDF + b*BM25 + c*JM = 1)
   weights:
-    tfidf: 0.33  # a
-    bm25: 0.34   # b
-    jm: 0.33     # c
+    tfidf: 0.5  # a
+    bm25: 0.5   # b
+    jm: 0     # c
 
   # Pseudo-Relevance Feedback (PRF)
   prf_top_k: 3
@@ -28,7 +28,7 @@ retrieval:
 
   # Dense re-ranking configuration (runs after lexical stage)
   dense:
-    model: "intfloat/multilingual-e5-small"
+    model: "./My_RAG/models/multilingual-e5-small"
     normalize: true
     batch_size: 32
     query_prefix: "query: "
