@@ -46,6 +46,9 @@ def main(query_path, docs_path, language, output_path):
             print(f"\n[Retrieval Debug] Query ID {query['query']['query_id']}: {query_text}")
             print(f"  Language: {retrieval_debug['language']} | top_k: {retrieval_debug['top_k']} | "
                   f"candidates considered: {retrieval_debug['candidate_count']}")
+            dense_info = retrieval_debug.get("dense", {})
+            if dense_info.get("enabled"):
+                print(f"  Dense rerank: {dense_info.get('model')} (basis={dense_info.get('rank_basis')})")
             if retrieval_debug["keyword_info"]:
                 print(f"  Keywords: {retrieval_debug['keyword_info']['keywords']} "
                       f"(boost={retrieval_debug['keyword_info']['boost']})")

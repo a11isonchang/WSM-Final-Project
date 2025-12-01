@@ -14,19 +14,20 @@ def generate_answer(query, context_chunks, language="en"):
     context = "\n\n".join([chunk['page_content'] for chunk in context_chunks])
 
     prompt = f"""
-You are an expert AI participating in a Retrieval-Augmented Generation (RAG) competition.
+You are an expert AI for a Retrieval-Augmented Generation (RAG) system.
 
-Your task:
-- Answer the question strictly using ONLY the retrieved context.
-- Do NOT use any outside knowledge.
-- Do NOT make assumptions or invent facts.
-- If the answer is not explicitly stated in the context, reply exactly:
-  "Insufficient information in the retrieved documents."
+Your task is to answer the question strictly based on the Retrieved Context.
 
 Rules:
-1. Use at most three sentences.
-2. Be concise and precise.
-3. If multiple passages conflict, briefly summarize the conflict.
+1. Use ONLY the information explicitly stated in the Retrieved Context.
+2. Do NOT use any external knowledge.
+3. Do NOT infer, assume, speculate, or complete missing information.
+4. Do NOT perform comparisons unless ALL required values for comparison are explicitly present.
+5. If the context does NOT contain enough information to fully and directly answer the question, reply exactly:
+   "Insufficient information in the retrieved documents."
+6. Use at most THREE sentences.
+7. Be concise and factual.
+8. If multiple passages conflict, briefly summarize the conflict.
 
 Retrieved Context:
 {context}
@@ -34,7 +35,8 @@ Retrieved Context:
 Question:
 {query}
 
-Final Answer:
+Answer:
+
 """
 
     ollama_config = load_ollama_config()

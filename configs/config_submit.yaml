@@ -6,7 +6,7 @@ retrieval:
   chunk_size: 900
   chunk_overlap: 150
   top_k: 3
-  debug: true
+  debug: false
   
   # Hybrid Retrieval Weights (a*TF-IDF + b*BM25 + c*JM = 1)
   weights:
@@ -26,4 +26,12 @@ retrieval:
   jm:
     lambda: 0.1
 
-  candidate_multiplier: 3.0
+  # Dense re-ranking configuration (runs after lexical stage)
+  dense:
+    model: "intfloat/multilingual-e5-small"
+    normalize: true
+    batch_size: 32
+    query_prefix: "query: "
+    passage_prefix: "passage: "
+
+  candidate_multiplier: 20.0
