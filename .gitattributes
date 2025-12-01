@@ -1,1 +1,2 @@
 *.safetensors filter=lfs diff=lfs merge=lfs -text
+My_RAG/models/** filter=lfs diff=lfs merge=lfs -text
