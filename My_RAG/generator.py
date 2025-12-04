@@ -13,69 +13,38 @@ def load_ollama_config() -> dict:
 def generate_answer(query, context_chunks, language="en"):
     context = "\n\n".join([chunk['page_content'] for chunk in context_chunks])
 
-    prompt = f"""
-You are an expert AI for a Retrieval-Augmented Generation (RAG) system.
+    if language == "zh":
+        prompt = f"""你是一個專業的問答系統。請根據以下「檢索到的文件」回答問題。
 
-Your task is to answer the question **strictly based on the Retrieved Context**.
+規則：
+1. 只使用檢索到的文件中明確提到的內容
+2. 禁止使用外部知識或推測
+3. 回答要簡短精確（最多2-3句）
+4. 如果資料不足，回答：「Insufficient information in the retrieved documents.」
 
-Before answering, detect the language of the user's question:
-- If the question is in **Chinese**, use the **Chinese Answering Mode (strict & concise)**.
-- If the question is in **English**, use the **English Answering Mode (CoT-light)**.
+檢索到的文件：
+{context}
 
-====================================================
-# Chinese Answering Mode (for Chinese questions)
+問題：
+{query}
 
-Rules:
-1. **只使用 Retrieved Context 中明確提到的內容。**
-2. **禁止使用外部知識、背景知識、世界知識。**
-3. **禁止推論、猜測、補全、模糊寫作。**
-4. **回答必須簡短貼題，不能加入無關資訊。**
-5. **最多二到三句，越短越好。**
-6. **不要重述題目，不要加解釋，不要加背景，不要舉例。**
-7. **如果資料缺少必須資訊，請回答：**
-   「Insufficient information in the retrieved documents.」
-8. **如果資料彼此矛盾，只需簡短指出矛盾點，不要自行推測。**
-
-Chinese style priorities:
-- Factuality ＞ Completeness ＞ ROUGE ＞ Length
-- 寧可回答較短，也不要加入任何猜測或廢話。
-
-====================================================
-# English Answering Mode (for English questions)
+回答："""
+    else:  # English
+        prompt = f"""You are a professional question-answering system. Answer the question based ONLY on the Retrieved Documents below.
 
 Rules:
-1. **Use ONLY information explicitly stated in the Retrieved Context.**
-2. **No external knowledge, no speculation, no assumptions.**
-3. **Provide a direct answer to the question; do NOT restate the question.**
-4. **Use at most 3 sentences, but they may be slightly more informative than the Chinese mode.**
-5. **Be concise, factual, and focused on the asked information.**
-6. **If required information is missing, reply exactly:**
-   "Insufficient information in the retrieved documents."
-7. **If context contains contradictions, briefly state the conflict.**
+1. Use ONLY information explicitly stated in the documents
+2. No external knowledge or speculation
+3. Be concise (max 3 sentences)
+4. If information is missing, reply: "Insufficient information in the retrieved documents."
 
-English style priorities:
-- Completeness ＞ Factuality ＞ ROUGE ＞ Brevity
-- Prefer a clean, grounded short answer over speculative elaboration.
-
-====================================================
-# Hidden Chain-of-Thought Instructions (Do NOT show)
-
-- Internally analyze the retrieved context step-by-step.
-- Extract only explicit facts.
-- Detect missing info, contradictions, or ambiguity.
-- Decide whether an answer can be strictly grounded.
-- In the final output, ONLY output the final answer—never the reasoning.
-
-====================================================
-
-Retrieved Context:
+Retrieved Documents:
 {context}
 
 Question:
 {query}
 
-Answer:
-"""
+Answer:"""
 
     ollama_config = load_ollama_config()
     client = Client(host=ollama_config["host"])

@@ -64,7 +64,9 @@ def main(query_path, docs_path, language, output_path):
         answer = generate_answer(query_text, retrieved_chunks, language)
 
         query["prediction"]["content"] = answer
-        query["prediction"]["references"] = [retrieved_chunks[0]['page_content']] if retrieved_chunks else []
+        query["prediction"]["references"] = [
+            chunk['page_content'] for chunk in retrieved_chunks
+        ] if retrieved_chunks else []
 
     save_jsonl(output_path, queries)
     print("Predictions saved at '{}'".format(output_path))
