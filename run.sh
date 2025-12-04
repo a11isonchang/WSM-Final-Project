@@ -36,3 +36,8 @@ run_results() {
 run_results "en"
 run_results "zh"
 log "[INFO] All inference tasks completed."
+
+python3 rageval/evaluation/main.py --input_file ./predictions/predictions_zh.jsonl --output_file ./result/score_zh.jsonl --language zh
+python3 rageval/evaluation/main.py --input_file ./predictions/predictions_en.jsonl --output_file ./result/score_en.jsonl --language en
+
+python3 rageval/evaluation/process_intermediate.py

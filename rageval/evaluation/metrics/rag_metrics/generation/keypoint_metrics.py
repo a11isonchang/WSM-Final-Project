@@ -520,7 +520,7 @@ Key Point Evaluation:
 class KEYPOINT_METRICS:
     name: str = "keypoint_metrics"
 
-    def __init__(self, use_openai = True, model='gpt-oss:20b', version='v1'):
+    def __init__(self, use_openai = True, model='granite4:3b', version='v1'):
         # 初始化任何必要的属性
         self.client = OpenAI(
             api_key="ollama",
