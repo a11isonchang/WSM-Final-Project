@@ -13,31 +13,38 @@ def load_ollama_config() -> dict:
 def generate_answer(query, context_chunks, language="en"):
     context = "\n\n".join([chunk['page_content'] for chunk in context_chunks])
 
-    prompt = f"""
-You are an expert AI for a Retrieval-Augmented Generation (RAG) system.
+    if language == "zh":
+        prompt = f"""你是一個專業的問答系統。請根據以下「檢索到的文件」回答問題。
 
-Your task is to answer the question strictly based on the Retrieved Context.
+規則：
+1. 只使用檢索到的文件中明確提到的內容
+2. 禁止使用外部知識或推測
+3. 回答要簡短精確（最多2-3句）
+4. 如果資料不足，回答：「Insufficient information in the retrieved documents.」
+
+檢索到的文件：
+{context}
+
+問題：
+{query}
+
+回答："""
+    else:  # English
+        prompt = f"""You are a professional question-answering system. Answer the question based ONLY on the Retrieved Documents below.
 
 Rules:
-1. Use ONLY the information explicitly stated in the Retrieved Context.
-2. Do NOT use any external knowledge.
-3. Do NOT infer, assume, speculate, or complete missing information.
-4. Do NOT perform comparisons unless ALL required values for comparison are explicitly present.
-5. If the context does NOT contain enough information to fully and directly answer the question, reply exactly:
-   "Insufficient information in the retrieved documents."
-6. Use at most THREE sentences.
-7. Be concise and factual.
-8. If multiple passages conflict, briefly summarize the conflict.
+1. Use ONLY information explicitly stated in the documents
+2. No external knowledge or speculation
+3. Be concise (max 3 sentences)
+4. If information is missing, reply: "Insufficient information in the retrieved documents."
 
-Retrieved Context:
+Retrieved Documents:
 {context}
 
 Question:
 {query}
 
-Answer:
-
-"""
+Answer:"""
 
     ollama_config = load_ollama_config()
     client = Client(host=ollama_config["host"])
