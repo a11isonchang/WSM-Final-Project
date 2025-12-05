@@ -104,6 +104,10 @@ class HybridRetriever:
 
     def _init_dense_encoder(self):
         """Load the dense encoder lazily if configured."""
+        if not self.dense_config.get("enabled", True):
+            self.dense_model = None
+            return
+
         model_name = self.dense_config.get("model")
         if not model_name:
             self.dense_model = None
@@ -125,6 +129,10 @@ class HybridRetriever:
 
     def _init_cross_encoder(self):
         """Load the cross encoder lazily if configured."""
+        if not self.cross_encoder_config.get("enabled", True):
+            self.cross_encoder_model = None
+            return
+
         model_name = self.cross_encoder_config.get("model")
         if not model_name:
             self.cross_encoder_model = None

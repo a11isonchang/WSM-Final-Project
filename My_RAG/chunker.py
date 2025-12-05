@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 # Download required NLTK data (run once)
 try:
     nltk.data.find('tokenizers/punkt')
-except LookupError:
+except (LookupError, Exception):
     nltk.download('punkt', quiet=True)
     nltk.download('punkt_tab', quiet=True)
 

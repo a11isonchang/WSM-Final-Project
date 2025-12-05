@@ -28,6 +28,7 @@ retrieval:
 
   # Dense re-ranking configuration (runs after lexical stage)
   dense:
+    enabled: false
     model: "./My_RAG/models/all_minilm_l6"
     normalize: true
     batch_size: 32

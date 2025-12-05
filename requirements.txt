@@ -8,3 +8,8 @@ tqdm==4.67.1
 nltk==3.9.1
 scikit-learn==1.5.2
 sentence-transformers==3.0.1
+pysbd==0.3.4
+openai==2.9.0
+rouge==1.0.1
+rouge-chinese==1.0.3
+numpy==2.2.6
