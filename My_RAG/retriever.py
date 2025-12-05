@@ -230,27 +230,54 @@ class HybridRetriever:
         final_scores, (bm25_s, tfidf_s, jm_s) = self._calculate_hybrid_scores(query, tokenized_query)
         dense_query_text = query
 
-        # --- Pseudo-Relevance Feedback ---
+        # --- Pseudo-Relevance Feedback (Improved) ---
         expanded_info = None
         if self.prf_top_k > 0 and self.prf_term_count > 0:
             # Get top docs from initial pass
             temp_top_indices = np.argsort(final_scores)[::-1][:self.prf_top_k]
             
-            feedback_tokens = []
-            for idx in temp_top_indices:
-                feedback_tokens.extend(self.tokenized_corpus[idx])
+            # Only apply PRF if top results have reasonable scores
+            top_scores = [final_scores[i] for i in temp_top_indices]
+            avg_top_score = np.mean(top_scores) if top_scores else 0
             
-            if feedback_tokens:
-                most_common = Counter(feedback_tokens).most_common(self.prf_term_count)
-                new_terms = [term for term, count in most_common]
+            # Adaptive PRF: only expand if we have confident results
+            if avg_top_score > 0.1:  # Threshold to avoid expanding on poor matches
+                feedback_tokens = []
+                for idx in temp_top_indices:
+                    feedback_tokens.extend(self.tokenized_corpus[idx])
                 
-                # Expand Query
-                tokenized_query.extend(new_terms)
-                expanded_query_text = query + " " + " ".join(new_terms) # Approximate text for TF-IDF
-                expanded_info = new_terms
-                dense_query_text = expanded_query_text
-                # Re-calculate scores with expanded query
-                final_scores, (bm25_s, tfidf_s, jm_s) = self._calculate_hybrid_scores(expanded_query_text, tokenized_query)
+                if feedback_tokens:
+                    # Filter expansion terms using TF-IDF-like scoring
+                    term_freq = Counter(feedback_tokens)
+                    query_terms_set = set(tokenized_query)
+                    
+                    # Score terms by frequency in feedback docs vs presence in original query
+                    scored_terms = []
+                    for term, count in term_freq.items():
+                        # Skip if already in query
+                        if term in query_terms_set:
+                            continue
+                        # Skip very common terms (appear in too many docs)
+                        doc_freq = sum(1 for doc in self.tokenized_corpus if term in doc)
+                        if doc_freq > len(self.corpus) * 0.5:  # appears in >50% docs
+                            continue
+                        # Score = frequency in feedback docs * inverse doc frequency
+                        idf = np.log(len(self.corpus) / (1 + doc_freq))
+                        score = count * idf
+                        scored_terms.append((term, score))
+                    
+                    # Select top scoring terms
+                    scored_terms.sort(key=lambda x: x[1], reverse=True)
+                    new_terms = [term for term, score in scored_terms[:self.prf_term_count]]
+                    
+                    if new_terms:
+                        # Expand Query
+                        tokenized_query.extend(new_terms)
+                        expanded_query_text = query + " " + " ".join(new_terms)
+                        expanded_info = new_terms
+                        dense_query_text = expanded_query_text
+                        # Re-calculate scores with expanded query
+                        final_scores, (bm25_s, tfidf_s, jm_s) = self._calculate_hybrid_scores(expanded_query_text, tokenized_query)
 
         # Candidate Selection
         candidate_target = max(top_k, int(top_k * self.candidate_multiplier))
