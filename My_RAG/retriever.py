@@ -163,7 +163,10 @@ class HybridRetriever:
     def _calculate_hybrid_scores(self, query_text, tokenized_query):
         # TF-IDF
         query_vec = self.tfidf_vectorizer.transform([query_text])
-        tfidf_raw = cosine_similarity(query_vec, self.tfidf_matrix).flatten()
+        if query_vec.nnz == 0:
+            tfidf_raw = np.zeros(self.tfidf_matrix.shape[0])
+        else:
+            tfidf_raw = cosine_similarity(query_vec, self.tfidf_matrix).flatten()
         
         # BM25
         bm25_raw = np.array(self.bm25.get_scores(tokenized_query))

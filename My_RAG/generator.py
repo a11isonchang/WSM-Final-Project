@@ -23,11 +23,9 @@ Rules:
 2. Do NOT use any external knowledge.
 3. Do NOT infer, assume, speculate, or complete missing information.
 4. Do NOT perform comparisons unless ALL required values for comparison are explicitly present.
-5. If the context does NOT contain enough information to fully and directly answer the question, reply exactly:
-   "Insufficient information in the retrieved documents."
-6. Use at most THREE sentences.
-7. Be concise and factual.
-8. If multiple passages conflict, briefly summarize the conflict.
+5. If the context does NOT contain the answer, reply: "Insufficient information in the retrieved documents."
+6. Be concise, factual, and comprehensive in covering the key points requested.
+7. If multiple passages conflict, briefly summarize the conflict.
 
 Retrieved Context:
 {context}

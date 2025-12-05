@@ -5,7 +5,7 @@ ollama:
 retrieval:
   chunk_size: 900
   chunk_overlap: 150
-  top_k: 3
+  top_k: 5
   debug: false
   
   # Hybrid Retrieval Weights (a*TF-IDF + b*BM25 + c*JM = 1)
@@ -28,7 +28,7 @@ retrieval:
 
   # Dense re-ranking configuration (runs after lexical stage)
   dense:
-    model: "./My_RAG/models/multilingual-e5-small"
+    model: "./My_RAG/models/all_minilm_l6"
     normalize: true
     batch_size: 32
     query_prefix: "query: "
