@@ -33,7 +33,13 @@ def load_chinese_stop_words() -> set:
 class HybridRetriever:
     """
     Hybrid retriever combining BM25, TF-IDF, and JM Smoothing with Pseudo-Relevance Feedback.
+
     Final Score = a*TF-IDF + b*BM25 + c*JM
+
+    Reranking策略（優先順序）:
+    1. Cross Encoder（如果有設定 cross_encoder.model）
+    2. Dense Bi-Encoder（如果有設定 dense.model）
+    3. 只用 hybrid 分數（沒有 reranker）
     """
 
     def __init__(
@@ -49,6 +55,7 @@ class HybridRetriever:
         prf_top_k: int = 0,
         prf_term_count: int = 5,
         dense_config: Optional[Dict[str, Any]] = None,
+        cross_encoder_config: Optional[Dict[str, Any]] = None,
     ):
         self.chunks = chunks
         self.language = language
@@ -57,12 +64,21 @@ class HybridRetriever:
         self.candidate_multiplier = max(1.0, candidate_multiplier)
         self.prf_top_k = max(0, int(prf_top_k))
         self.prf_term_count = max(0, int(prf_term_count))
+
+        # ===== Dense Bi-Encoder 設定 =====
         self.dense_config = dense_config or {}
         self.dense_model = None
         self.dense_batch_size = int(self.dense_config.get("batch_size", 32))
         self.dense_normalize = bool(self.dense_config.get("normalize", True))
         self.dense_query_prefix = self.dense_config.get("query_prefix", "query: ")
         self.dense_passage_prefix = self.dense_config.get("passage_prefix", "passage: ")
+
+        # ===== Cross Encoder 設定 =====
+        self.cross_encoder_config = cross_encoder_config or {}
+        self.cross_encoder_model = None
+        self.cross_encoder_batch_size = int(
+            self.cross_encoder_config.get("batch_size", 32)
+        )
 
         self.porter_stemmer = PorterStemmer()
         self.chinese_stop_words = load_chinese_stop_words()
@@ -81,7 +97,10 @@ class HybridRetriever:
         for doc in self.tokenized_corpus:
             self.collection_stats.update(doc)
         self.collection_len = sum(self.collection_stats.values())
+
+        # 初始化 reranker
         self._init_dense_encoder()
+        self._init_cross_encoder()
 
     def _init_dense_encoder(self):
         """Load the dense encoder lazily if configured."""
@@ -103,6 +122,27 @@ class HybridRetriever:
             self.dense_model = SentenceTransformer(model_name, device=device)
         else:
             self.dense_model = SentenceTransformer(model_name)
+
+    def _init_cross_encoder(self):
+        """Load the cross encoder lazily if configured."""
+        model_name = self.cross_encoder_config.get("model")
+        if not model_name:
+            self.cross_encoder_model = None
+            return
+
+        try:
+            from sentence_transformers import CrossEncoder
+        except ImportError as exc:  # pragma: no cover - dependency guidance
+            raise ImportError(
+                "sentence-transformers is required for cross-encoder re-ranking. "
+                "Install it via requirements.txt before enabling the feature."
+            ) from exc
+
+        device = self.cross_encoder_config.get("device")
+        if device:
+            self.cross_encoder_model = CrossEncoder(model_name, device=device)
+        else:
+            self.cross_encoder_model = CrossEncoder(model_name)
 
     def _tokenize(self, text: str):
         if self.language == "zh":
@@ -193,34 +233,84 @@ class HybridRetriever:
         if not clean_query:
             return candidate_indices, {}
 
+        try:
+            candidate_indices = np.asarray(candidate_indices)
+            query_payload = f"{self.dense_query_prefix}{clean_query}"
+            query_embedding = self.dense_model.encode(
+                query_payload,
+                convert_to_numpy=True,
+                normalize_embeddings=self.dense_normalize,
+                show_progress_bar=False,
+            )
+
+            passages = [
+                f"{self.dense_passage_prefix}{self.chunks[idx].get('page_content', '')}"
+                for idx in candidate_indices
+            ]
+            
+            # Filter out empty passages to prevent encoding errors
+            valid_indices = []
+            valid_passages = []
+            for i, passage in enumerate(passages):
+                if passage.strip():
+                    valid_indices.append(candidate_indices[i])
+                    valid_passages.append(passage)
+            
+            if not valid_passages:
+                return candidate_indices, {}
+            
+            doc_embeddings = self.dense_model.encode(
+                valid_passages,
+                batch_size=self.dense_batch_size,
+                convert_to_numpy=True,
+                normalize_embeddings=self.dense_normalize,
+                show_progress_bar=False,
+            )
+
+            dense_scores = doc_embeddings @ query_embedding
+            order = np.argsort(dense_scores)[::-1]
+            reranked = np.array(valid_indices)[order]
+            dense_score_map = {
+                idx: float(score) for idx, score in zip(valid_indices, dense_scores)
+            }
+            return reranked, dense_score_map
+            
+        except Exception as e:
+            # Log warning and fall back to original ranking
+            print(f"Warning: Dense reranking failed: {e}. Falling back to hybrid scores.")
+            return candidate_indices, {}
+
+    def _cross_encoder_rerank(self, query_text: str, candidate_indices: np.ndarray):
+        """
+        使用 CrossEncoder 對 candidate_indices 重新排序。
+        """
+        if not self.cross_encoder_model or len(candidate_indices) == 0:
+            return candidate_indices, {}
+
+        clean_query = query_text.strip()
+        if not clean_query:
+            return candidate_indices, {}
+
         candidate_indices = np.asarray(candidate_indices)
-        query_payload = f"{self.dense_query_prefix}{clean_query}"
-        query_embedding = self.dense_model.encode(
-            query_payload,
-            convert_to_numpy=True,
-            normalize_embeddings=self.dense_normalize,
+
+        pairs = []
+        for idx in candidate_indices:
+            passage = self.chunks[idx].get("page_content", "")
+            pairs.append((clean_query, passage))
+
+        # CrossEncoder.predict 會回傳一個 list / np.array 的分數
+        scores = self.cross_encoder_model.predict(
+            pairs,
+            batch_size=self.cross_encoder_batch_size,
             show_progress_bar=False,
         )
+        scores = np.asarray(scores)
 
-        passages = [
-            f"{self.dense_passage_prefix}{self.chunks[idx].get('page_content', '')}"
-            for idx in candidate_indices
-        ]
-        doc_embeddings = self.dense_model.encode(
-            passages,
-            batch_size=self.dense_batch_size,
-            convert_to_numpy=True,
-            normalize_embeddings=self.dense_normalize,
-            show_progress_bar=False,
-        )
-
-        dense_scores = doc_embeddings @ query_embedding
-        order = np.argsort(dense_scores)[::-1]
+        order = np.argsort(scores)[::-1]
         reranked = candidate_indices[order]
-        dense_score_map = {
-            idx: float(score) for idx, score in zip(candidate_indices, dense_scores)
-        }
-        return reranked, dense_score_map
+
+        score_map = {idx: float(score) for idx, score in zip(candidate_indices, scores)}
+        return reranked, score_map
 
     def retrieve(self, query, top_k=5):
         if not self.chunks:
@@ -284,10 +374,17 @@ class HybridRetriever:
         candidate_count = min(len(self.chunks), candidate_target)
         candidate_indices = np.argsort(final_scores)[::-1][:candidate_count]
 
-        # Dense Re-ranking
-        dense_scores = {}
+        # Reranking：預設優先使用 Cross Encoder，其次 Dense Bi-Encoder
+        dense_scores: Dict[int, float] = {}
         rank_basis = "hybrid"
-        if self.dense_model and candidate_indices.size > 0:
+
+        if self.cross_encoder_model and candidate_indices.size > 0:
+            # 預設優先使用 cross encoder
+            rank_basis = "cross_encoder"
+            reranked_indices, dense_scores = self._cross_encoder_rerank(
+                dense_query_text, candidate_indices
+            )
+        elif self.dense_model and candidate_indices.size > 0:
             rank_basis = "dense"
             reranked_indices, dense_scores = self._dense_rerank(
                 dense_query_text, candidate_indices
@@ -307,20 +404,25 @@ class HybridRetriever:
             "weights": self.weights,
             "prf_expanded_terms": expanded_info,
             "keyword_info": None,
+            "rank_basis": rank_basis,  # 新增：實際用哪種 reranker
             "dense": {
                 "enabled": bool(self.dense_model),
                 "model": self.dense_config.get("model"),
-                "rank_basis": rank_basis,
+            },
+            "cross_encoder": {
+                "enabled": bool(self.cross_encoder_model),
+                "model": self.cross_encoder_config.get("model"),
             },
             "results": [
                 {
                     "metadata": self.chunks[i].get("metadata", {}),
                     "preview": self.chunks[i].get("page_content", "")[:200],
-                    "score": dense_scores.get(i, final_scores[i]),
+                    "score": dense_scores.get(i, float(final_scores[i])),
                     "components": {
-                        "bm25": bm25_s[i],
-                        "tfidf": tfidf_s[i],
-                        "jm": jm_s[i],
+                        "bm25": float(bm25_s[i]),
+                        "tfidf": float(tfidf_s[i]),
+                        "jm": float(jm_s[i]),
+                        # 這裡的 dense 欄位：如果有 reranker（dense 或 cross encoder），就是 reranker 的 score
                         "dense": dense_scores.get(i),
                     },
                 }
@@ -335,16 +437,18 @@ def create_retriever(chunks, language, config=None):
     config = config or {}
     weights = config.get("weights", {"tfidf": 0, "bm25": 1, "jm": 0})
     dense_config = config.get("dense", {})
+    cross_encoder_config = config.get("cross_encoder", {})
 
     return HybridRetriever(
         chunks,
         language,
         k1=config.get("bm25", {}).get("k1", 1.5),
         b=config.get("bm25", {}).get("b", 0.75),
-        jm_lambda=config.get("jm", {}).get("lambda", 0.5),
+        jm_lambda=config.get("jm", {}).get("lambda", 0.1),
         weights=weights,
         candidate_multiplier=config.get("candidate_multiplier", 3.0),
         prf_top_k=config.get("prf_top_k", 3),
         prf_term_count=config.get("prf_term_count", 5),
         dense_config=dense_config,
+        cross_encoder_config=cross_encoder_config,
     )

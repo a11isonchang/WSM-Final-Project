@@ -116,17 +116,28 @@ def main(query_path: str, docs_path: str, language: str, output_path: str) -> No
                     answer = "Error generating answer." if language == "en" else "生成答案時發生錯誤。"
                 
                 # 4c. Update predictions with ALL retrieved chunks as references
+                # Ensure prediction field exists
+                if "prediction" not in query_obj:
+                    query_obj["prediction"] = {}
+                
                 query_obj["prediction"]["content"] = answer
                 query_obj["prediction"]["references"] = [
                     chunk['page_content'] for chunk in retrieved_chunks
                 ] if retrieved_chunks else []
                 
+                # Note: All other original fields (ground_truth, domain, language, etc.) 
+                # are automatically preserved since we only update the prediction field
+                
                 successful += 1
                 
             except Exception as e:
                 print(f"❌ Unexpected error processing query: {e}")
+                # Ensure prediction field exists even on error
+                if "prediction" not in query_obj:
+                    query_obj["prediction"] = {}
                 query_obj["prediction"]["content"] = ""
                 query_obj["prediction"]["references"] = []
+                # Note: ground_truth and other fields are preserved
                 failed += 1
         
         # 5. Save Results
