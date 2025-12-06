@@ -1,5 +1,6 @@
 import jsonlines
 from pathlib import Path
+from My_RAG.config import load_config
 
 def load_jsonl(file_path):
     docs = []
@@ -13,3 +14,8 @@ def save_jsonl(file_path, data):
     with jsonlines.open(file_path, mode='w') as writer:
         for item in data:
             writer.write(item)
+
+def load_ollama_config():
+    """Loads the overall config and returns the 'ollama' section."""
+    full_config = load_config()
+    return full_config.get("ollama", {})

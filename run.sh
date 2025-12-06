@@ -2,6 +2,9 @@
 
 set -e
 
+# Ensure we can import modules from rageval/evaluation
+export PYTHONPATH=$PYTHONPATH:$(pwd)/rageval/evaluation
+
 log() {
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     local message="$timestamp - $1"
@@ -13,31 +16,44 @@ log() {
     echo "$border"
 }
 
-run_results() {
+run_pipeline() {
     local language=$1
-
+    
+    # A. Inference
     log "[INFO] Running inference for language: ${language}"
     python ./My_RAG/main.py \
-        --query_path ./dragonball_dataset/queries_show/test_queries_${language}.jsonl \
+        --query_path ./dragonball_dataset/queries_show/queries_${language}.jsonl \
         --docs_path ./dragonball_dataset/dragonball_docs.jsonl \
         --language ${language} \
         --output ./predictions/predictions_${language}.jsonl
 
+    # B. Check Format
     log "[INFO] Checking output format for language: ${language}"
     python ./check_output_format.py \
-        --query_file ./dragonball_dataset/queries_show/test_queries_${language}.jsonl \
+        --query_file ./dragonball_dataset/queries_show/queries_${language}.jsonl \
         --processed_file ./predictions/predictions_${language}.jsonl
 
-    if [ $? -eq 0 ]; then
-        echo Format check passed.
-    fi
+    # C. Merge Ground Truth
+    log "[INFO] Merging ground truth for evaluation: ${language}"
+    python merge_ground_truth.py \
+        ./predictions/predictions_${language}.jsonl \
+        ./dragonball_dataset/dragonball_queries.jsonl \
+        ./predictions/predictions_${language}_with_gt.jsonl
+
+    # D. Run Evaluation (Calculate Scores)
+    log "[INFO] Running evaluation for language: ${language}"
+    python ./rageval/evaluation/main.py \
+        --input_file ./predictions/predictions_${language}_with_gt.jsonl \
+        --output_file ./result/predictions_${language}_eval.jsonl \
+        --language ${language} \
+        --num_workers 4
 }
 
-run_results "en"
-run_results "zh"
-log "[INFO] All inference tasks completed."
+run_pipeline "en"
+run_pipeline "zh"
 
-python3 rageval/evaluation/main.py --input_file ./predictions/predictions_zh.jsonl --output_file ./result/score_zh.jsonl --language zh
-python3 rageval/evaluation/main.py --input_file ./predictions/predictions_en.jsonl --output_file ./result/score_en.jsonl --language en
+# 3. Aggregate Results
+log "[INFO] Aggregating results..."
+python ./rageval/evaluation/process_intermediate.py
 
-python3 rageval/evaluation/process_intermediate.py
+log "[INFO] Pipeline completed."

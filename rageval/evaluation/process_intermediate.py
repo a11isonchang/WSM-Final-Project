@@ -70,6 +70,18 @@ def process_folder(folder_path: str, output_file: str, metric_list: List[str]):
     
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
+        
+    # Print Summary Table
+    print("\n" + "="*80)
+    print(f"{'File':<30} | {'Gen Score':<10} | {'Ret Score':<10} | {'Factual':<10} | {'ROUGE-L':<10}")
+    print("-" * 80)
+    for filename, scores in results.items():
+        gen_score = scores.get('Generation_Total_Score', 0.0)
+        ret_score = scores.get('Retrieval_Total_Score', 0.0)
+        factual = scores.get('factual_score', 0.0)
+        rouge = scores.get('ROUGELScore', 0.0)
+        print(f"{filename:<30} | {gen_score:.4f}     | {ret_score:.4f}     | {factual:.4f}     | {rouge:.4f}")
+    print("="*80 + "\n")
 
 if __name__ == "__main__":
     folder_path = './result'

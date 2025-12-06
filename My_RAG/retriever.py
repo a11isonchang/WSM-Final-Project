@@ -9,9 +9,19 @@ from pathlib import Path
 from functools import lru_cache
 from typing import List, Dict, Any, Optional
 from collections import Counter
+from ollama import Client
 
 EN_TOKEN_PATTERN = re.compile(r"[a-z0-9']+")
 ENGLISH_STOP_WORDS_SET = set(ENGLISH_STOP_WORDS)
+
+def load_english_learned_stopwords():
+    learned_path = Path(__file__).parent / "stopwords_learned_en.txt"
+    if learned_path.exists():
+        with learned_path.open("r", encoding="utf-8") as f:
+            learned = {line.strip() for line in f if line.strip()}
+            ENGLISH_STOP_WORDS_SET.update(learned)
+
+load_english_learned_stopwords()
 
 
 @lru_cache()
@@ -27,7 +37,72 @@ def load_chinese_stop_words() -> set:
     if stop_file.exists():
         with stop_file.open("r", encoding="utf-8") as f:
             stop_words = {line.strip() for line in f if line.strip()}
+            
+    # Load learned stopwords if available
+    learned_path = Path(__file__).parent / "stopwords_learned_zh.txt"
+    if learned_path.exists():
+        with learned_path.open("r", encoding="utf-8") as f:
+            stop_words.update({line.strip() for line in f if line.strip()})
+            
     return stop_words
+
+
+class OllamaEmbeddings:
+    """Wrapper for Ollama embeddings to match SentenceTransformer interface."""
+    def __init__(self, model: str, base_url: str):
+        self.client = Client(host=base_url)
+        self.model = model
+        try:
+            self.client.pull(model)
+        except Exception as e:
+            print(f"Warning: Failed to pull model {model}: {e}")
+
+    def encode(self, sentences, batch_size=32, convert_to_numpy=True, normalize_embeddings=False, show_progress_bar=False):
+        is_single = isinstance(sentences, str)
+        inputs = [sentences] if is_single else sentences
+        
+        embeddings = []
+        for text in inputs:
+            try:
+                if not text or not text.strip():
+                    # Return zero vector for empty text to avoid errors
+                    # We don't know dim yet, so we'll fix it after first valid one or default to 768
+                    embeddings.append(None) 
+                    continue
+
+                response = self.client.embeddings(model=self.model, prompt=text)
+                emb = response.get('embedding')
+                if not emb:
+                    embeddings.append(None)
+                else:
+                    embeddings.append(emb)
+            except Exception as e:
+                print(f"Warning: Embedding failed for text '{text[:20]}...': {e}")
+                embeddings.append(None)
+            
+        # Fix None values by replacing with zero vectors of correct dimension
+        valid_embs = [e for e in embeddings if e is not None]
+        dim = len(valid_embs[0]) if valid_embs else 768 # Default to 768 if all fail
+        
+        final_embeddings = []
+        for e in embeddings:
+            if e is None:
+                final_embeddings.append(np.zeros(dim))
+            else:
+                final_embeddings.append(e)
+            
+        result = np.array(final_embeddings)
+        
+        if normalize_embeddings:
+            # Avoid divide by zero
+            norm = np.linalg.norm(result, axis=1, keepdims=True)
+            # Replace 0 norm with 1 to avoid div/0, the vector remains 0
+            norm[norm == 0] = 1.0 
+            result = result / norm
+
+        if is_single:
+            return result[0]
+        return result
 
 
 class HybridRetriever:
@@ -56,6 +131,8 @@ class HybridRetriever:
         prf_term_count: int = 5,
         dense_config: Optional[Dict[str, Any]] = None,
         cross_encoder_config: Optional[Dict[str, Any]] = None,
+        ollama_config: Optional[Dict[str, Any]] = None,
+        query_expansion_config: Optional[Dict[str, Any]] = None,
     ):
         self.chunks = chunks
         self.language = language
@@ -79,6 +156,11 @@ class HybridRetriever:
         self.cross_encoder_batch_size = int(
             self.cross_encoder_config.get("batch_size", 32)
         )
+        
+        # ===== LLM Query Expansion Config =====
+        self.ollama_config = ollama_config or {}
+        self.query_expansion_config = query_expansion_config or {}
+        self.llm_client = None
 
         self.porter_stemmer = PorterStemmer()
         self.chinese_stop_words = load_chinese_stop_words()
@@ -98,9 +180,22 @@ class HybridRetriever:
             self.collection_stats.update(doc)
         self.collection_len = sum(self.collection_stats.values())
 
-        # 初始化 reranker
+        # 初始化 reranker & LLM
         self._init_dense_encoder()
         self._init_cross_encoder()
+        self._init_llm_client()
+
+    def _init_llm_client(self):
+        """Initialize Ollama client if query expansion is enabled."""
+        if self.query_expansion_config.get("enabled", False):
+            if not self.ollama_config.get("host"):
+                print("Warning: Query expansion enabled but no Ollama host provided.")
+                return
+            try:
+                self.llm_client = Client(host=self.ollama_config["host"])
+            except Exception as e:
+                print(f"Warning: Failed to initialize Ollama client: {e}")
+                self.llm_client = None
 
     def _init_dense_encoder(self):
         """Load the dense encoder lazily if configured."""
@@ -108,9 +203,24 @@ class HybridRetriever:
             self.dense_model = None
             return
 
-        model_name = self.dense_config.get("model")
+        # Select model based on language
+        if self.language == "zh":
+            model_name = self.dense_config.get("model_zh") or self.dense_config.get("model")
+        else:
+            model_name = self.dense_config.get("model_en") or self.dense_config.get("model")
+
         if not model_name:
             self.dense_model = None
+            return
+            
+        print(f"Loading dense retriever for {self.language}: {model_name}")
+
+        if "embeddinggemma" in model_name or "qwen" in model_name or self.dense_config.get("type") == "ollama":
+            host = self.ollama_config.get("host") or "http://localhost:11434"
+            self.dense_model = OllamaEmbeddings(
+                model=model_name,
+                base_url=host
+            )
             return
 
         try:
@@ -211,7 +321,10 @@ class HybridRetriever:
     def _calculate_hybrid_scores(self, query_text, tokenized_query):
         # TF-IDF
         query_vec = self.tfidf_vectorizer.transform([query_text])
-        tfidf_raw = cosine_similarity(query_vec, self.tfidf_matrix).flatten()
+        if query_vec.nnz == 0:
+            tfidf_raw = np.zeros(self.tfidf_matrix.shape[0])
+        else:
+            tfidf_raw = cosine_similarity(query_vec, self.tfidf_matrix).flatten()
         
         # BM25
         bm25_raw = np.array(self.bm25.get_scores(tokenized_query))
@@ -275,6 +388,10 @@ class HybridRetriever:
                 show_progress_bar=False,
             )
 
+            # SANITY CHECK: Replace NaNs and Infs with 0.0 to prevent runtime warnings/errors
+            doc_embeddings = np.nan_to_num(doc_embeddings, nan=0.0, posinf=0.0, neginf=0.0)
+            query_embedding = np.nan_to_num(query_embedding, nan=0.0, posinf=0.0, neginf=0.0)
+
             dense_scores = doc_embeddings @ query_embedding
             order = np.argsort(dense_scores)[::-1]
             reranked = np.array(valid_indices)[order]
@@ -319,14 +436,63 @@ class HybridRetriever:
 
         score_map = {idx: float(score) for idx, score in zip(candidate_indices, scores)}
         return reranked, score_map
+        
+    def _rewrite_query(self, query: str) -> str:
+        """
+        Rewrite the query using LLM to expand keywords and improve retrieval.
+        """
+        if not self.llm_client or not self.query_expansion_config.get("enabled", False):
+            return query
+
+        try:
+            # Basic prompt for query expansion
+            if self.language == "zh":
+                prompt = f"""你是一個搜索查詢優化助手。請重寫並擴展以下查詢，使其包含更多相關的關鍵詞，以便在文檔庫中進行更好的檢索。
+查詢: {query}
+僅輸出重寫後的查詢，不要包含任何解釋或其他文字。"""
+            else:
+                prompt = f"""You are a search query optimization assistant. Please rewrite and expand the following query to include more relevant keywords for better retrieval in a document corpus.
+Query: {query}
+Output ONLY the rewritten query, without any explanation."""
+
+            response = self.llm_client.generate(
+                model=self.ollama_config["model"],
+                prompt=prompt,
+                options={"temperature": 0.2}
+            )
+            
+            rewritten = response["response"].strip()
+            # Clean up quotes if present
+            if rewritten.startswith('"') and rewritten.endswith('"'):
+                rewritten = rewritten[1:-1]
+            
+            # If rewriting failed (e.g. empty), return original
+            if not rewritten:
+                return query
+                
+            # Concatenate original query to preserve original intent (safe bet)
+            # We weight the original query more by putting it first? 
+            # Actually for BM25, having more terms is good.
+            return f"{query} {rewritten}"
+            
+        except Exception as e:
+            print(f"Warning: Query expansion failed: {e}")
+            return query
 
     def retrieve(self, query, top_k=5):
         if not self.chunks:
             return [], {}
 
-        tokenized_query = self._tokenize(query)
-        final_scores, (bm25_s, tfidf_s, jm_s) = self._calculate_hybrid_scores(query, tokenized_query)
-        dense_query_text = query
+        # --- Step 0: Query Expansion (LLM) ---
+        search_query = query
+        if self.query_expansion_config.get("enabled", False):
+            search_query = self._rewrite_query(query)
+            # print(f"Original Query: {query}")
+            # print(f"Expanded Query: {search_query}")
+
+        tokenized_query = self._tokenize(search_query)
+        final_scores, (bm25_s, tfidf_s, jm_s) = self._calculate_hybrid_scores(search_query, tokenized_query)
+        dense_query_text = search_query
 
         # --- Pseudo-Relevance Feedback (Improved) ---
         expanded_info = None
@@ -371,7 +537,7 @@ class HybridRetriever:
                     if new_terms:
                         # Expand Query
                         tokenized_query.extend(new_terms)
-                        expanded_query_text = query + " " + " ".join(new_terms)
+                        expanded_query_text = search_query + " " + " ".join(new_terms)
                         expanded_info = new_terms
                         dense_query_text = expanded_query_text
                         # Re-calculate scores with expanded query
@@ -411,6 +577,7 @@ class HybridRetriever:
             "candidate_multiplier": self.candidate_multiplier,
             "weights": self.weights,
             "prf_expanded_terms": expanded_info,
+            "query_expansion": self.query_expansion_config.get("enabled", False), # Info for debug
             "keyword_info": None,
             "rank_basis": rank_basis,  # 新增：實際用哪種 reranker
             "dense": {
@@ -446,7 +613,29 @@ def create_retriever(chunks, language, config=None):
     weights = config.get("weights", {"tfidf": 0, "bm25": 1, "jm": 0})
     dense_config = config.get("dense", {})
     cross_encoder_config = config.get("cross_encoder", {})
-
+    ollama_config = config.get("ollama", {}) # Need to pass global ollama config
+    # Retrieve query expansion config from 'retrieval' section if it exists there?
+    # config passed here IS the 'retrieval' section usually? 
+    # No, in main.py: retrieval_config = config.get("retrieval", {})
+    # So 'ollama' is NOT in 'config' here. 
+    # I need to fix main.py or pass it here.
+    
+    # Actually, main.py loads full config. Let's see main.py again.
+    # main.py: 
+    # config = load_config()
+    # retrieval_config = config.get("retrieval", {})
+    # ... 
+    # retriever = create_retriever(chunks, language, retrieval_config)
+    
+    # So 'ollama' is missing. I need to update main.py to pass 'ollama' config to create_retriever
+    # For now, I'll handle it in create_retriever by re-loading config if needed or passing None.
+    # But better is to fix main.py.
+    
+    # Wait, I can import load_config here inside create_retriever if needed? 
+    # Or better, update main.py to pass the whole config or just the ollama part.
+    
+    # Let's assume for now I'll fix main.py next.
+    
     return HybridRetriever(
         chunks,
         language,
@@ -459,4 +648,6 @@ def create_retriever(chunks, language, config=None):
         prf_term_count=config.get("prf_term_count", 5),
         dense_config=dense_config,
         cross_encoder_config=cross_encoder_config,
+        ollama_config=ollama_config, 
+        query_expansion_config=config.get("query_expansion", {}),
     )
