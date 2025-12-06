@@ -24,7 +24,7 @@ retrieval:
 
   # Multi-Query (Generate variations + RRF Fusion)
   multi_query:
-    enabled: true
+    enabled: false
     num_versions: 3
 
   # Model Hyperparameters
