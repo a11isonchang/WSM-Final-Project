@@ -11,6 +11,11 @@ from typing import List, Dict, Any, Optional
 from collections import Counter
 from ollama import Client
 
+try:
+    import opencc
+except ImportError:
+    opencc = None
+
 EN_TOKEN_PATTERN = re.compile(r"[a-z0-9']+")
 ENGLISH_STOP_WORDS_SET = set(ENGLISH_STOP_WORDS)
 
@@ -52,10 +57,6 @@ class OllamaEmbeddings:
     def __init__(self, model: str, base_url: str):
         self.client = Client(host=base_url)
         self.model = model
-        try:
-            self.client.pull(model)
-        except Exception as e:
-            print(f"Warning: Failed to pull model {model}: {e}")
 
     def encode(self, sentences, batch_size=32, convert_to_numpy=True, normalize_embeddings=False, show_progress_bar=False):
         is_single = isinstance(sentences, str)
@@ -170,6 +171,16 @@ class HybridRetriever:
         self.porter_stemmer = PorterStemmer()
         self.chinese_stop_words = load_chinese_stop_words()
 
+        # Initialize OpenCC for Chinese normalization (Must be before tokenization)
+        if self.language == "zh" and opencc:
+            try:
+                self.cc_t2s = opencc.OpenCC('t2s')
+            except Exception as e:
+                print(f"Warning: Failed to initialize OpenCC: {e}")
+                self.cc_t2s = None
+        else:
+            self.cc_t2s = None
+
         self.tokenized_corpus = [self._tokenize(doc) for doc in self.corpus]
         self.bm25 = BM25Okapi(self.tokenized_corpus, k1=k1, b=b)
 
@@ -269,8 +280,31 @@ class HybridRetriever:
         else:
             self.cross_encoder_model = CrossEncoder(model_name)
 
+    def _normalize_chinese_text(self, text: str) -> str:
+        """
+        Normalize Chinese text:
+        1. Traditional to Simplified (if OpenCC available).
+        2. Full-width to Half-width conversion.
+        """
+        if self.cc_t2s:
+            text = self.cc_t2s.convert(text)
+            
+        # Full-width space (U+3000) -> Half-width space (U+0020)
+        text = text.replace('\u3000', ' ')
+        
+        # Range U+FF01 to U+FF5E (Full-width ASCII) -> U+0021 to U+007E (Half-width ASCII)
+        chars = []
+        for char in text:
+            code = ord(char)
+            if 0xFF01 <= code <= 0xFF5E:
+                chars.append(chr(code - 0xFEE0))
+            else:
+                chars.append(char)
+        return "".join(chars)
+
     def _tokenize(self, text: str):
         if self.language == "zh":
+            text = self._normalize_chinese_text(text)
             tokens = [tok.strip() for tok in jieba.cut(text) if tok.strip()]
             stop_words = self.chinese_stop_words
             return [tok for tok in tokens if tok not in stop_words]
@@ -498,12 +532,12 @@ Output ONLY the rewritten query, without any explanation."""
             if self.language == "zh":
                 prompt = f"""你是一个AI语言模型助手。你的任务是为给定的用户问题生成{num_versions}个不同版本，以便从向量数据库中检索相关文档。
 通过生成多视角的查询，你的目标是帮助用户克服基于距离的相似性搜索的一些局限性。
-请每行提供一个替代问题，不要编号，不要包含其他文字。
+请只输出替代问题，每行一个。不要包含任何其他文字、编号或通过“好的”、“以下是”等开头。
 原问题: {query}"""
             else:
                 prompt = f"""You are an AI language model assistant. Your task is to generate {num_versions} different versions of the given user question to retrieve relevant documents from a vector database.
 By generating multiple perspectives on the user question, your goal is to help the user overcome some of the limitations of distance-based similarity search.
-Provide these alternative questions separated by newlines. Do not number them.
+Provide ONLY the alternative questions separated by newlines. Do not number them. Do not include any introductory text like "Here are...".
 Original question: {query}"""
 
             response = self.llm_client.generate(
@@ -512,12 +546,22 @@ Original question: {query}"""
                 options={"temperature": 0.5}
             )
             
-            variations = [v.strip() for v in response["response"].strip().split('\n') if v.strip()]
-            # Add original query if not present
+            raw_variations = [v.strip() for v in response["response"].strip().split('\n') if v.strip()]
+            variations = []
+            for v in raw_variations:
+                # Basic filtering of conversational filler
+                lower_v = v.lower()
+                if lower_v.startswith("here are") or lower_v.startswith("sure,") or lower_v.startswith("certainly"):
+                    continue
+                # Remove numbering if model ignored instruction (e.g., "1. What is...")
+                v = re.sub(r'^\d+[\.\)]\s*', '', v)
+                variations.append(v)
+
+            # Add original query if not present (Priority #1)
             if query not in variations:
                 variations.insert(0, query)
                 
-            return variations[:num_versions+1] # Limit +1 for original
+            return variations[:num_versions+1]
             
         except Exception as e:
             print(f"Warning: Multi-query generation failed: {e}")
@@ -529,11 +573,14 @@ Original question: {query}"""
         results_list: List of lists, where each inner list contains document indices sorted by rank.
         """
         fused_scores = {}
-        for rank_list in results_list:
+        for i, rank_list in enumerate(results_list):
+            # Boost the original query (index 0) to reduce noise impact from poor variations
+            weight = 3.0 if i == 0 else 1.0
+            
             for rank, doc_idx in enumerate(rank_list):
                 if doc_idx not in fused_scores:
                     fused_scores[doc_idx] = 0
-                fused_scores[doc_idx] += 1 / (k + rank + 1)
+                fused_scores[doc_idx] += weight * (1 / (k + rank + 1))
         
         # Sort by fused score descending
         reranked_results = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
