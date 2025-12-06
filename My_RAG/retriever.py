@@ -486,8 +486,6 @@ Output ONLY the rewritten query, without any explanation."""
             print(f"Warning: Query expansion failed: {e}")
             return query
 
-            print(f"Warning: HyDE generation failed: {e}")
-            return query
 
     def _generate_query_variations(self, query: str) -> List[str]:
         """Generate multiple variations of the query."""
