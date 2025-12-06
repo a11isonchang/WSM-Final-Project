@@ -57,12 +57,10 @@ def _create_prompt_en(query: str, context: str) -> str:
 1. Base your answer ONLY on the Retrieved Context below
 2. Do NOT use external knowledge, assumptions, or inferences
 3. Do NOT make comparisons unless ALL necessary values are explicitly stated
-4. If the context lacks sufficient information, respond EXACTLY with:
-   "Insufficient information in the retrieved documents."
+4. If the context does NOT contain the answer, reply: "Insufficient information in the retrieved documents."
 5. Synthesize information across passages when they complement each other
 6. If passages conflict, acknowledge the conflict briefly
-7. Keep your answer concise (maximum 3 sentences)
-8. Be factual and precise
+7. Be concise, factual, and comprehensive in covering the key points requested.
 
 **Retrieved Context:**
 {context}
@@ -86,8 +84,7 @@ def _create_prompt_zh(query: str, context: str) -> str:
    "檢索文檔中資訊不足。"
 5. 當多個段落互補時，請綜合資訊
 6. 如果段落之間存在衝突，請簡要說明衝突
-7. 保持答案簡潔（最多3句話）
-8. 務必準確且基於事實
+7. 保持答案簡潔、事實準確，並全面涵蓋所需的關鍵點。
 
 **檢索上下文：**
 {context}

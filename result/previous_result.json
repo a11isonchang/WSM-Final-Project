@@ -1,18 +1,18 @@
 {
   "predictions_en_eval.jsonl": {
-    "Sentences_Precision": 0.05128826556176889,
-    "Sentences_Recall": 0.4528598872936346,
-    "Words_Precision": 0.16627694610396768,
-    "Words_Recall": 0.7272879585278189,
-    "ROUGELScore": 0.21777246947745496,
-    "completeness": 0.56875,
-    "hallucination": 0.36874999999999997,
-    "irrelevance": 0.0625,
-    "Words_F1": 0.2706713749730966,
-    "Sentences_F1": 0.09214116140360154,
-    "factual_score": 0.2,
-    "Generation_Total_Score": 0.20888623473872747,
-    "Retrieval_Total_Score": 0.1814062681883491
+    "Sentences_Precision": 0.06679020777110724,
+    "Sentences_Recall": 0.5441525608647891,
+    "Words_Precision": 0.1780180548947348,
+    "Words_Recall": 0.7689460146635603,
+    "ROUGELScore": 0.25199076724297303,
+    "completeness": 0.55625,
+    "hallucination": 0.41874999999999996,
+    "irrelevance": 0.025,
+    "Words_F1": 0.2891055283930992,
+    "Sentences_F1": 0.11897697940017463,
+    "factual_score": 0.13750000000000007,
+    "Generation_Total_Score": 0.19474538362148655,
+    "Retrieval_Total_Score": 0.2040412538966369
   },
   "score_zh.jsonl": {
     "Sentences_Precision": 0.03506047701494551,
@@ -45,18 +45,18 @@
     "Retrieval_Total_Score": 0.21927968459496494
   },
   "predictions_zh_eval.jsonl": {
-    "Sentences_Precision": 0.035057593192305524,
+    "Sentences_Precision": 0.03503110060750941,
     "Sentences_Recall": 0.8463534895710648,
-    "Words_Precision": 0.08902827170295002,
+    "Words_Precision": 0.08849160684689353,
     "Words_Recall": 0.8571428571428571,
-    "ROUGELScore": 0.22492245814243791,
-    "completeness": 0.37142857142857144,
-    "hallucination": 0.2476190476190476,
-    "irrelevance": 0.38095238095238093,
-    "Words_F1": 0.16130263299630446,
-    "Sentences_F1": 0.06732639721580697,
-    "factual_score": 0.12380952380952384,
-    "Generation_Total_Score": 0.17436599097598088,
-    "Retrieval_Total_Score": 0.11431451510605571
+    "ROUGELScore": 0.2461011675025131,
+    "completeness": 0.6095238095238095,
+    "hallucination": 0.19999999999999998,
+    "irrelevance": 0.19047619047619047,
+    "Words_F1": 0.16042128669018316,
+    "Sentences_F1": 0.06727754166129368,
+    "factual_score": 0.4095238095238095,
+    "Generation_Total_Score": 0.3278124885131613,
+    "Retrieval_Total_Score": 0.11384941417573842
   }
 }

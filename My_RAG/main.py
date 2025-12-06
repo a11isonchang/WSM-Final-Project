@@ -23,6 +23,11 @@ def main(query_path: str, docs_path: str, language: str, output_path: str) -> No
         # Load configuration
         config = load_config()
         retrieval_config = config.get("retrieval", {})
+        
+        # Inject ollama config into retrieval config for query expansion
+        if "ollama" in config:
+            retrieval_config["ollama"] = config["ollama"]
+            
         chunk_size = retrieval_config.get("chunk_size", 1000)
         chunk_overlap = retrieval_config.get("chunk_overlap", 200)
         top_k = retrieval_config.get("top_k", 3)
