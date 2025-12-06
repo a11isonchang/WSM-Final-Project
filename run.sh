@@ -16,12 +16,6 @@ log() {
     echo "$border"
 }
 
-# 1. Backup previous results
-if [ -f "result/final_result.json" ]; then
-    log "[INFO] Backing up previous results..."
-    cp result/final_result.json result/previous_result.json
-fi
-
 run_pipeline() {
     local language=$1
     
@@ -61,19 +55,5 @@ run_pipeline "zh"
 # 3. Aggregate Results
 log "[INFO] Aggregating results..."
 python ./rageval/evaluation/process_intermediate.py
-
-# 4. Update Best Result
-log "[INFO] Checking for new high score..."
-python update_best_result.py result/final_result.json result/best_result.json
-
-# 5. Compare Results
-log "[INFO] Comparing results..."
-if [ -f "result/previous_result.json" ] && [ -f "result/best_result.json" ]; then
-    python compare_results.py result/previous_result.json result/final_result.json result/best_result.json
-elif [ -f "result/previous_result.json" ]; then
-    python compare_results.py result/previous_result.json result/final_result.json
-else
-    log "[INFO] No previous results to compare."
-fi
 
 log "[INFO] Pipeline completed."

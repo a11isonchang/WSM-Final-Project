@@ -14,6 +14,15 @@ from ollama import Client
 EN_TOKEN_PATTERN = re.compile(r"[a-z0-9']+")
 ENGLISH_STOP_WORDS_SET = set(ENGLISH_STOP_WORDS)
 
+def load_english_learned_stopwords():
+    learned_path = Path(__file__).parent / "stopwords_learned_en.txt"
+    if learned_path.exists():
+        with learned_path.open("r", encoding="utf-8") as f:
+            learned = {line.strip() for line in f if line.strip()}
+            ENGLISH_STOP_WORDS_SET.update(learned)
+
+load_english_learned_stopwords()
+
 
 @lru_cache()
 def load_chinese_stop_words() -> set:
@@ -28,7 +37,72 @@ def load_chinese_stop_words() -> set:
     if stop_file.exists():
         with stop_file.open("r", encoding="utf-8") as f:
             stop_words = {line.strip() for line in f if line.strip()}
+            
+    # Load learned stopwords if available
+    learned_path = Path(__file__).parent / "stopwords_learned_zh.txt"
+    if learned_path.exists():
+        with learned_path.open("r", encoding="utf-8") as f:
+            stop_words.update({line.strip() for line in f if line.strip()})
+            
     return stop_words
+
+
+class OllamaEmbeddings:
+    """Wrapper for Ollama embeddings to match SentenceTransformer interface."""
+    def __init__(self, model: str, base_url: str):
+        self.client = Client(host=base_url)
+        self.model = model
+        try:
+            self.client.pull(model)
+        except Exception as e:
+            print(f"Warning: Failed to pull model {model}: {e}")
+
+    def encode(self, sentences, batch_size=32, convert_to_numpy=True, normalize_embeddings=False, show_progress_bar=False):
+        is_single = isinstance(sentences, str)
+        inputs = [sentences] if is_single else sentences
+        
+        embeddings = []
+        for text in inputs:
+            try:
+                if not text or not text.strip():
+                    # Return zero vector for empty text to avoid errors
+                    # We don't know dim yet, so we'll fix it after first valid one or default to 768
+                    embeddings.append(None) 
+                    continue
+
+                response = self.client.embeddings(model=self.model, prompt=text)
+                emb = response.get('embedding')
+                if not emb:
+                    embeddings.append(None)
+                else:
+                    embeddings.append(emb)
+            except Exception as e:
+                print(f"Warning: Embedding failed for text '{text[:20]}...': {e}")
+                embeddings.append(None)
+            
+        # Fix None values by replacing with zero vectors of correct dimension
+        valid_embs = [e for e in embeddings if e is not None]
+        dim = len(valid_embs[0]) if valid_embs else 768 # Default to 768 if all fail
+        
+        final_embeddings = []
+        for e in embeddings:
+            if e is None:
+                final_embeddings.append(np.zeros(dim))
+            else:
+                final_embeddings.append(e)
+            
+        result = np.array(final_embeddings)
+        
+        if normalize_embeddings:
+            # Avoid divide by zero
+            norm = np.linalg.norm(result, axis=1, keepdims=True)
+            # Replace 0 norm with 1 to avoid div/0, the vector remains 0
+            norm[norm == 0] = 1.0 
+            result = result / norm
+
+        if is_single:
+            return result[0]
+        return result
 
 
 class HybridRetriever:
@@ -129,9 +203,24 @@ class HybridRetriever:
             self.dense_model = None
             return
 
-        model_name = self.dense_config.get("model")
+        # Select model based on language
+        if self.language == "zh":
+            model_name = self.dense_config.get("model_zh") or self.dense_config.get("model")
+        else:
+            model_name = self.dense_config.get("model_en") or self.dense_config.get("model")
+
         if not model_name:
             self.dense_model = None
+            return
+            
+        print(f"Loading dense retriever for {self.language}: {model_name}")
+
+        if "embeddinggemma" in model_name or "qwen" in model_name or self.dense_config.get("type") == "ollama":
+            host = self.ollama_config.get("host") or "http://localhost:11434"
+            self.dense_model = OllamaEmbeddings(
+                model=model_name,
+                base_url=host
+            )
             return
 
         try:
@@ -298,6 +387,10 @@ class HybridRetriever:
                 normalize_embeddings=self.dense_normalize,
                 show_progress_bar=False,
             )
+
+            # SANITY CHECK: Replace NaNs and Infs with 0.0 to prevent runtime warnings/errors
+            doc_embeddings = np.nan_to_num(doc_embeddings, nan=0.0, posinf=0.0, neginf=0.0)
+            query_embedding = np.nan_to_num(query_embedding, nan=0.0, posinf=0.0, neginf=0.0)
 
             dense_scores = doc_embeddings @ query_embedding
             order = np.argsort(dense_scores)[::-1]
