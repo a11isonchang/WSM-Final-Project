@@ -1,6 +1,9 @@
 import jsonlines
 from pathlib import Path
-from My_RAG.config import load_config
+try:
+    from My_RAG.config import load_config
+except ImportError:
+    from config import load_config
 
 def load_jsonl(file_path):
     docs = []

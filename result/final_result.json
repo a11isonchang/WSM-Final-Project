@@ -1,18 +1,18 @@
 {
   "predictions_en_eval.jsonl": {
-    "Sentences_Precision": 0.13315887169232982,
-    "Sentences_Recall": 0.6276179842031615,
-    "Words_Precision": 0.2922686668094941,
-    "Words_Recall": 0.716333915686235,
-    "ROUGELScore": 0.25604257590776497,
-    "completeness": 0.45729166666666665,
-    "hallucination": 0.38958333333333334,
-    "irrelevance": 0.153125,
-    "Words_F1": 0.4151525331414209,
-    "Sentences_F1": 0.21970411424237113,
-    "factual_score": 0.06770833333333331,
-    "Generation_Total_Score": 0.16187545462054914,
-    "Retrieval_Total_Score": 0.317428323691896
+    "Sentences_Precision": 0.13388020353719415,
+    "Sentences_Recall": 0.571002328305435,
+    "Words_Precision": 0.3002301551727145,
+    "Words_Recall": 0.708564628990508,
+    "ROUGELScore": 0.2592909425694778,
+    "completeness": 0.5979166666666667,
+    "hallucination": 0.29583333333333334,
+    "irrelevance": 0.10625,
+    "Words_F1": 0.4217556867885175,
+    "Sentences_F1": 0.21690396478944263,
+    "factual_score": 0.3020833333333333,
+    "Generation_Total_Score": 0.28068713795140554,
+    "Retrieval_Total_Score": 0.31932982578898006
   },
   "score_zh.jsonl": {
     "Sentences_Precision": 0.03506047701494551,
@@ -45,18 +45,18 @@
     "Retrieval_Total_Score": 0.21927968459496494
   },
   "predictions_zh_eval.jsonl": {
-    "Sentences_Precision": 0.0640477150521253,
-    "Sentences_Recall": 0.7665761240794137,
-    "Words_Precision": 0.14886111602367355,
-    "Words_Recall": 0.8423645320197044,
-    "ROUGELScore": 0.3562997341202476,
-    "completeness": 0.3904761904761905,
+    "Sentences_Precision": 0.06048966221864639,
+    "Sentences_Recall": 0.6835337765330112,
+    "Words_Precision": 0.14908464868802884,
+    "Words_Recall": 0.8081761006289307,
+    "ROUGELScore": 0.29856916203077183,
+    "completeness": 0.3904761904761904,
     "hallucination": 0.13333333333333333,
     "irrelevance": 0.47619047619047616,
-    "Words_F1": 0.2530106531902918,
-    "Sentences_F1": 0.11821825198789118,
+    "Words_F1": 0.25173214325625864,
+    "Sentences_F1": 0.11114361484872094,
     "factual_score": 0.2571428571428571,
-    "Generation_Total_Score": 0.30672129563155237,
-    "Retrieval_Total_Score": 0.18561445258909148
+    "Generation_Total_Score": 0.27785600958681445,
+    "Retrieval_Total_Score": 0.1814378790524898
   }
 }
