@@ -7,7 +7,8 @@ def split_sentences(text, language):
         sentences = re.split(r'(?<=[.!?])\s+', text)
     elif language == 'zh':
         # Split by Chinese punctuation
-        sentences = re.split(r'(?<=[。！？])', text)
+       # sentences = re.split(r'(?<=[。！？])', text)
+        sentences = re.split(r'([。！？；\n]+)', text)
     else:
         sentences = [text]
     return [s.strip() for s in sentences if s.strip()]
