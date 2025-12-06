@@ -133,6 +133,8 @@ class HybridRetriever:
         cross_encoder_config: Optional[Dict[str, Any]] = None,
         ollama_config: Optional[Dict[str, Any]] = None,
         query_expansion_config: Optional[Dict[str, Any]] = None,
+        hyde_config: Optional[Dict[str, Any]] = None,
+        multi_query_config: Optional[Dict[str, Any]] = None,
     ):
         self.chunks = chunks
         self.language = language
@@ -145,6 +147,7 @@ class HybridRetriever:
         # ===== Dense Bi-Encoder 設定 =====
         self.dense_config = dense_config or {}
         self.dense_model = None
+        self.actual_dense_model_name = None # Store actual model name for debug
         self.dense_batch_size = int(self.dense_config.get("batch_size", 32))
         self.dense_normalize = bool(self.dense_config.get("normalize", True))
         self.dense_query_prefix = self.dense_config.get("query_prefix", "query: ")
@@ -157,9 +160,11 @@ class HybridRetriever:
             self.cross_encoder_config.get("batch_size", 32)
         )
         
-        # ===== LLM Query Expansion Config =====
+        # ===== LLM Query Expansion / HyDE / Multi-Query Config =====
         self.ollama_config = ollama_config or {}
         self.query_expansion_config = query_expansion_config or {}
+        self.hyde_config = hyde_config or {}
+        self.multi_query_config = multi_query_config or {}
         self.llm_client = None
 
         self.porter_stemmer = PorterStemmer()
@@ -211,9 +216,11 @@ class HybridRetriever:
 
         if not model_name:
             self.dense_model = None
+            self.actual_dense_model_name = None
             return
             
         print(f"Loading dense retriever for {self.language}: {model_name}")
+        self.actual_dense_model_name = model_name
 
         if "embeddinggemma" in model_name or "qwen" in model_name or self.dense_config.get("type") == "ollama":
             host = self.ollama_config.get("host") or "http://localhost:11434"
@@ -479,20 +486,129 @@ Output ONLY the rewritten query, without any explanation."""
             print(f"Warning: Query expansion failed: {e}")
             return query
 
+
+    def _generate_query_variations(self, query: str) -> List[str]:
+        """Generate multiple variations of the query."""
+        if not self.llm_client:
+            return [query]
+            
+        num_versions = self.multi_query_config.get("num_versions", 3)
+        
+        try:
+            if self.language == "zh":
+                prompt = f"""你是一个AI语言模型助手。你的任务是为给定的用户问题生成{num_versions}个不同版本，以便从向量数据库中检索相关文档。
+通过生成多视角的查询，你的目标是帮助用户克服基于距离的相似性搜索的一些局限性。
+请每行提供一个替代问题，不要编号，不要包含其他文字。
+原问题: {query}"""
+            else:
+                prompt = f"""You are an AI language model assistant. Your task is to generate {num_versions} different versions of the given user question to retrieve relevant documents from a vector database.
+By generating multiple perspectives on the user question, your goal is to help the user overcome some of the limitations of distance-based similarity search.
+Provide these alternative questions separated by newlines. Do not number them.
+Original question: {query}"""
+
+            response = self.llm_client.generate(
+                model=self.ollama_config["model"],
+                prompt=prompt,
+                options={"temperature": 0.5}
+            )
+            
+            variations = [v.strip() for v in response["response"].strip().split('\n') if v.strip()]
+            # Add original query if not present
+            if query not in variations:
+                variations.insert(0, query)
+                
+            return variations[:num_versions+1] # Limit +1 for original
+            
+        except Exception as e:
+            print(f"Warning: Multi-query generation failed: {e}")
+            return [query]
+
+    def _reciprocal_rank_fusion(self, results_list: List[List[int]], k=60):
+        """
+        Fuse rank lists using Reciprocal Rank Fusion (RRF).
+        results_list: List of lists, where each inner list contains document indices sorted by rank.
+        """
+        fused_scores = {}
+        for rank_list in results_list:
+            for rank, doc_idx in enumerate(rank_list):
+                if doc_idx not in fused_scores:
+                    fused_scores[doc_idx] = 0
+                fused_scores[doc_idx] += 1 / (k + rank + 1)
+        
+        # Sort by fused score descending
+        reranked_results = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
+        return reranked_results
+
     def retrieve(self, query, top_k=5):
         if not self.chunks:
             return [], {}
 
-        # --- Step 0: Query Expansion (LLM) ---
-        search_query = query
-        if self.query_expansion_config.get("enabled", False):
+        # --- Multi-Query / RRF Logic ---
+        if self.multi_query_config.get("enabled", False):
+            queries = self._generate_query_variations(query)
+            # print(f"Multi-Query Variations: {queries}")
+            
+            all_ranked_lists = []
+            debug_results = []
+            
+            for q in queries:
+                # Run single-query retrieval logic for each variation
+                # Note: Recursion is dangerous if not careful, so we'll refactor the core logic 
+                # to a separate method _retrieve_single(q) or just call existing logic inline
+                
+                # For now, let's just copy the core logic inline to avoid huge refactor risks
+                # or simpler: temporarily disable multi_query to call self.retrieve(q) 
+                # BUT that would recurse infinite loop.
+                
+                # BETTER: Extract single query logic below into _retrieve_single
+                indices, _ = self._retrieve_single(q, top_k=max(top_k, 20)) # Get deeper list for fusion
+                all_ranked_lists.append(indices)
+            
+            # Fuse results
+            fused_results = self._reciprocal_rank_fusion(all_ranked_lists)
+            final_top_indices = [idx for idx, score in fused_results[:top_k]]
+            
+            selected = [self.chunks[i] for i in final_top_indices]
+            
+            return selected, {
+                "language": self.language,
+                "rank_basis": "multi_query_rrf",
+                "variations": queries,
+                "results": [
+                    {
+                        "metadata": self.chunks[i].get("metadata", {}),
+                        "preview": self.chunks[i].get("page_content", "")[:100],
+                        "score": score
+                    }
+                    for i, score in fused_results[:top_k]
+                ]
+            }
+
+        # --- Standard Single Query Logic (wrapped in helper for Multi-Query use) ---
+        top_indices, retrieval_debug = self._retrieve_single(query, top_k)
+        selected = [self.chunks[i] for i in top_indices]
+        return selected, retrieval_debug
+
+    def _retrieve_single(self, query, top_k=5):
+        """
+        Performs the standard Hybrid + Dense retrieval for a single query string.
+        Returns: (top_indices_list, debug_info)
+        """
+        # --- Step 0: Query Processing (Expansion or HyDE) ---
+        search_query = query # For BM25/Lexical
+        dense_query_text = query # For Dense/Embedding
+
+        # HyDE Logic
+        if self.hyde_config.get("enabled", False):
+            hypothetical_doc = self._generate_hypothetical_doc(query)
+            dense_query_text = hypothetical_doc 
+            search_query = query 
+        elif self.query_expansion_config.get("enabled", False):
             search_query = self._rewrite_query(query)
-            # print(f"Original Query: {query}")
-            # print(f"Expanded Query: {search_query}")
+            dense_query_text = search_query
 
         tokenized_query = self._tokenize(search_query)
         final_scores, (bm25_s, tfidf_s, jm_s) = self._calculate_hybrid_scores(search_query, tokenized_query)
-        dense_query_text = search_query
 
         # --- Pseudo-Relevance Feedback (Improved) ---
         expanded_info = None
@@ -504,43 +620,31 @@ Output ONLY the rewritten query, without any explanation."""
             top_scores = [final_scores[i] for i in temp_top_indices]
             avg_top_score = np.mean(top_scores) if top_scores else 0
             
-            # Adaptive PRF: only expand if we have confident results
-            if avg_top_score > 0.1:  # Threshold to avoid expanding on poor matches
+            if avg_top_score > 0.1: 
                 feedback_tokens = []
                 for idx in temp_top_indices:
                     feedback_tokens.extend(self.tokenized_corpus[idx])
                 
                 if feedback_tokens:
-                    # Filter expansion terms using TF-IDF-like scoring
                     term_freq = Counter(feedback_tokens)
                     query_terms_set = set(tokenized_query)
-                    
-                    # Score terms by frequency in feedback docs vs presence in original query
                     scored_terms = []
                     for term, count in term_freq.items():
-                        # Skip if already in query
-                        if term in query_terms_set:
-                            continue
-                        # Skip very common terms (appear in too many docs)
+                        if term in query_terms_set: continue
                         doc_freq = sum(1 for doc in self.tokenized_corpus if term in doc)
-                        if doc_freq > len(self.corpus) * 0.5:  # appears in >50% docs
-                            continue
-                        # Score = frequency in feedback docs * inverse doc frequency
+                        if doc_freq > len(self.corpus) * 0.5: continue
                         idf = np.log(len(self.corpus) / (1 + doc_freq))
                         score = count * idf
                         scored_terms.append((term, score))
                     
-                    # Select top scoring terms
                     scored_terms.sort(key=lambda x: x[1], reverse=True)
                     new_terms = [term for term, score in scored_terms[:self.prf_term_count]]
                     
                     if new_terms:
-                        # Expand Query
                         tokenized_query.extend(new_terms)
                         expanded_query_text = search_query + " " + " ".join(new_terms)
                         expanded_info = new_terms
-                        dense_query_text = expanded_query_text
-                        # Re-calculate scores with expanded query
+                        # Re-calculate scores
                         final_scores, (bm25_s, tfidf_s, jm_s) = self._calculate_hybrid_scores(expanded_query_text, tokenized_query)
 
         # Candidate Selection
@@ -548,12 +652,11 @@ Output ONLY the rewritten query, without any explanation."""
         candidate_count = min(len(self.chunks), candidate_target)
         candidate_indices = np.argsort(final_scores)[::-1][:candidate_count]
 
-        # Reranking：預設優先使用 Cross Encoder，其次 Dense Bi-Encoder
+        # Reranking
         dense_scores: Dict[int, float] = {}
         rank_basis = "hybrid"
 
         if self.cross_encoder_model and candidate_indices.size > 0:
-            # 預設優先使用 cross encoder
             rank_basis = "cross_encoder"
             reranked_indices, dense_scores = self._cross_encoder_rerank(
                 dense_query_text, candidate_indices
@@ -568,8 +671,7 @@ Output ONLY the rewritten query, without any explanation."""
 
         # Final Selection
         top_indices = reranked_indices[:top_k]
-        selected = [self.chunks[i] for i in top_indices]
-
+        
         retrieval_debug = {
             "language": self.language,
             "top_k": top_k,
@@ -577,35 +679,22 @@ Output ONLY the rewritten query, without any explanation."""
             "candidate_multiplier": self.candidate_multiplier,
             "weights": self.weights,
             "prf_expanded_terms": expanded_info,
-            "query_expansion": self.query_expansion_config.get("enabled", False), # Info for debug
-            "keyword_info": None,
-            "rank_basis": rank_basis,  # 新增：實際用哪種 reranker
+            "rank_basis": rank_basis, 
             "dense": {
                 "enabled": bool(self.dense_model),
-                "model": self.dense_config.get("model"),
-            },
-            "cross_encoder": {
-                "enabled": bool(self.cross_encoder_model),
-                "model": self.cross_encoder_config.get("model"),
+                "model": getattr(self, "actual_dense_model_name", self.dense_config.get("model")),
             },
             "results": [
                 {
                     "metadata": self.chunks[i].get("metadata", {}),
                     "preview": self.chunks[i].get("page_content", "")[:200],
                     "score": dense_scores.get(i, float(final_scores[i])),
-                    "components": {
-                        "bm25": float(bm25_s[i]),
-                        "tfidf": float(tfidf_s[i]),
-                        "jm": float(jm_s[i]),
-                        # 這裡的 dense 欄位：如果有 reranker（dense 或 cross encoder），就是 reranker 的 score
-                        "dense": dense_scores.get(i),
-                    },
                 }
                 for i in top_indices
             ],
         }
-
-        return selected, retrieval_debug
+        
+        return top_indices, retrieval_debug
 
 
 def create_retriever(chunks, language, config=None):
@@ -650,4 +739,6 @@ def create_retriever(chunks, language, config=None):
         cross_encoder_config=cross_encoder_config,
         ollama_config=ollama_config, 
         query_expansion_config=config.get("query_expansion", {}),
+        hyde_config=config.get("hyde", {}),
+        multi_query_config=config.get("multi_query", {}),
     )

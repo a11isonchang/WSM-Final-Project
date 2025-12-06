@@ -13,3 +13,6 @@ openai==2.9.0
 rouge==1.0.1
 rouge-chinese==1.0.3
 numpy==2.2.6
+langchain
+langchain-community
+langchain-text-splitters

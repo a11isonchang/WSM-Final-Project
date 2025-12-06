@@ -2,4 +2,6 @@ jsonlines
 rank_bm25
 jieba
 ollama
-tqdm
+tqdmlangchain
+langchain-community
+langchain-text-splitters
