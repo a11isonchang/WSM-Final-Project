@@ -3,10 +3,10 @@ ollama:
   model: "granite4:3b"
 
 retrieval:
-  chunk_size: 400
-  chunk_overlap: 150
-  top_k: 6
-  debug: false
+  chunk_size: 1000
+  chunk_overlap: 200
+  top_k: 5
+  debug: true
   
   # Hybrid Retrieval Weights (a*TF-IDF + b*BM25 + c*JM = 1)
   weights:
@@ -15,8 +15,17 @@ retrieval:
     jm: 0.2     # c
 
   # Pseudo-Relevance Feedback (PRF)
-  prf_top_k: 3
+  prf_top_k: 0
   prf_term_count: 5
+
+  # HyDE (Hypothetical Document Embeddings)
+  hyde:
+    enabled: false
+
+  # Multi-Query (Generate variations + RRF Fusion)
+  multi_query:
+    enabled: true
+    num_versions: 3
 
   # Model Hyperparameters
   bm25:
@@ -24,7 +33,7 @@ retrieval:
     b: 0.75
   
   jm:
-    lambda: 0.1
+    lambda: 0.5
 
   # Dense re-ranking configuration (runs after lexical stage)
   dense:
