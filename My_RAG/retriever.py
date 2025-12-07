@@ -306,11 +306,27 @@ class HybridRetriever:
         if not faiss:
             print("Warning: FAISS not installed; skipping dense FAISS index.")
             return
+        
+        # Check for pre-built index on disk
+        index_dir = Path(__file__).parent / "indices"
+        index_path = index_dir / f"faiss_index_{self.language}.bin"
+        
+        if index_path.exists():
+            print(f"📂 Loading pre-built FAISS index from {index_path}...")
+            try:
+                self.faiss_index = faiss.read_index(str(index_path))
+                self.faiss_metric = "ip" if self.dense_normalize else "l2" # Assume config matches build
+                print(f"✓ Loaded index with {self.faiss_index.ntotal} vectors.")
+                return
+            except Exception as e:
+                print(f"⚠️  Failed to load pre-built index: {e}. Rebuilding...")
+
         if not self.dense_model:
             print("Warning: Dense model not initialized; skipping FAISS index.")
             return
 
         try:
+            print("🏗️  Building FAISS index from scratch...")
             passages = [
                 f"{self.dense_passage_prefix}{chunk.get('page_content', '')}"
                 for chunk in self.chunks
