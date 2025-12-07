@@ -3,16 +3,18 @@ ollama:
   model: "granite4:3b"
 
 retrieval:
-  chunk_size: 1000
-  chunk_overlap: 200
-  top_k: 3
+  chunk_size_en: 384
+  chunk_overlap_en: 64
+  chunk_size_zh: 384
+  chunk_overlap_zh: 64
+  top_k: 8
   debug: false
   
-  # Hybrid Retrieval Weights (a*TF-IDF + b*BM25 + c*JM = 1)
+  # Hybrid Retrieval Weights (Note: AdvancedRAGRetriever sets its own ensemble weights, these are for general config readability)
   weights:
-    tfidf: 0  # a
-    bm25: 1   # b
-    jm: 0     # c
+    tfidf: 0
+    bm25: 1
+    jm: 0
 
   # Pseudo-Relevance Feedback (PRF)
   prf_top_k: 0
@@ -33,39 +35,39 @@ retrieval:
     keywords: []
     boost_factor: 0.3
 
-  # Model Hyperparameters
+  # Model Hyperparameters (BM25 still used by LangChain BM25Retriever)
   bm25:
     k1: 1.5
     b: 0.75
   
   jm:
-    lambda: 0.5
+    lambda: 0.5 # Not directly used by the new retriever, but kept for config structure
 
-  # Cross-Encoder Reranking
+  # Cross-Encoder Reranking (Currently disabled in our optimized setup)
   cross_encoder:
-    enabled: true
-    model: "My_RAG/models/ms-marco-MiniLM-L-6-v2" # Pointing to the locally downloaded model
+    enabled: false
+    model_en: "My_RAG/models/ms-marco-MiniLM-L-6-v2"
+    model_zh: null 
+    model: null
     batch_size: 32
-    device: "cuda" # Change to "cuda" if you have a GPU
+    device: "cpu"
 
-  # Dense re-ranking configuration (runs after lexical stage)
+  # Dense Retriever Configuration (Used by AdvancedRAGRetriever)
   dense:
-    enabled: false # Disabled to prioritize Cross-Encoder
-    type: "faiss"      # FAISS dense retrieval (uses GPU if available)
+    enabled: true
+    type: "faiss"      # Always FAISS for our current setup
     use_gpu: true      # Set false to force CPU FAISS
     # Language-specific models
-    model_en: "embeddinggemma:300m"
+    model_en: "embeddinggemma:300m" # Reverting English model to Gemma
     model_zh: "qwen3-embedding:0.6b"
-    # Fallback model (optional, used if language not specified)
-    model: "embeddinggemma:300m"
     
     normalize: true
     batch_size: 32
     query_prefix: "search_query: "
     passage_prefix: "search_document: "
 
-  candidate_multiplier: 50.0 # Increased candidates for Cross-Encoder
+  candidate_multiplier: 50.0 # Used for raw candidate selection, but Ensemble uses k=100
 
-  # Parent Document Retrieval
+  # Parent Document Retrieval (Currently disabled)
   parent_document_retrieval:
-    enabled: true # Enabled for full context
+    enabled: false

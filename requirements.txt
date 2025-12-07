@@ -19,3 +19,5 @@ langchain-text-splitters
 opencc-python-reimplemented
 faiss-cpu
 langchain-experimental
+langchain-ollama
+langchain-classic
