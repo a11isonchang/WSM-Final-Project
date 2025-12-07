@@ -10,8 +10,64 @@ retrieval:
   top_k: 8
   debug: false
   
-  # ... (weights logic remains, though handled by Ensemble internally now) ...
+  # Hybrid Retrieval Weights (Note: AdvancedRAGRetriever sets its own ensemble weights, these are for general config readability)
+  weights:
+    tfidf: 0
+    bm25: 1
+    jm: 0
 
-  # Parent Document Retrieval
+  # Pseudo-Relevance Feedback (PRF)
+  prf_top_k: 0
+  prf_term_count: 5
+
+  # HyDE (Hypothetical Document Embeddings)
+  hyde:
+    enabled: false
+
+  # Multi-Query (Generate variations + RRF Fusion)
+  multi_query:
+    enabled: false
+    num_versions: 3
+
+  # Keyword Boosting
+  keyword_boost:
+    enabled: false
+    keywords: []
+    boost_factor: 0.3
+
+  # Model Hyperparameters (BM25 still used by LangChain BM25Retriever)
+  bm25:
+    k1: 1.5
+    b: 0.75
+  
+  jm:
+    lambda: 0.5 # Not directly used by the new retriever, but kept for config structure
+
+  # Cross-Encoder Reranking (Currently disabled in our optimized setup)
+  cross_encoder:
+    enabled: false
+    model_en: "My_RAG/models/ms-marco-MiniLM-L-6-v2"
+    model_zh: null 
+    model: null
+    batch_size: 32
+    device: "cpu"
+
+  # Dense Retriever Configuration (Used by AdvancedRAGRetriever)
+  dense:
+    enabled: true
+    type: "faiss"      # Always FAISS for our current setup
+    use_gpu: true      # Set false to force CPU FAISS
+    # Language-specific models
+    model_en: "embeddinggemma:300m" # Reverting English model to Gemma
+    model_zh: "qwen3-embedding:0.6b"
+    
+    normalize: true
+    batch_size: 32
+    query_prefix: "search_query: "
+    passage_prefix: "search_document: "
+
+  candidate_multiplier: 50.0 # Used for raw candidate selection, but Ensemble uses k=100
+
+  # Parent Document Retrieval (Currently disabled)
   parent_document_retrieval:
-    enabled: false # Disabled for final optimized run
+    enabled: false

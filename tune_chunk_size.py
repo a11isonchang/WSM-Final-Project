@@ -5,18 +5,21 @@ import sys
 import numpy as np
 from typing import List, Dict, Any
 from tqdm import tqdm
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain.retrievers import EnsembleRetriever
+from langchain_community.retrievers import BM25Retriever
+from langchain_core.documents import Document
+import jieba
+import re
 
-# Mock config for standalone run
+# Path setup
 sys.path.append(os.path.join(os.path.dirname(__file__), '.'))
-
 try:
     from My_RAG.chunker import chunk_documents
-    from My_RAG.retriever import create_retriever
 except ImportError:
-    # If running from root without module installation
     sys.path.append('My_RAG')
     from chunker import chunk_documents
-    from retriever import create_retriever
 
 def load_jsonl(file_path: str) -> List[Dict[str, Any]]:
     data = []
@@ -25,6 +28,14 @@ def load_jsonl(file_path: str) -> List[Dict[str, Any]]:
             if line.strip():
                 data.append(json.loads(line))
     return data
+
+def preprocess_text_zh(text):
+    tokens = jieba.cut(text)
+    return [t.strip() for t in tokens if t.strip()]
+
+def preprocess_text_en(text):
+    tokens = re.findall(r'\w+', text.lower())
+    return [t.strip() for t in tokens if t.strip()]
 
 def evaluate_chunk_size(
     chunk_size: int,
@@ -37,7 +48,6 @@ def evaluate_chunk_size(
     print(f"\n🔄 Testing Chunk Size: {chunk_size} | Overlap: {chunk_overlap}")
     
     # 1. Chunk Documents
-    # We use the same chunk_size for both en/zh params to ensure the test applies to the target lang
     chunks = chunk_documents(
         documents, 
         language,
@@ -48,20 +58,30 @@ def evaluate_chunk_size(
     )
     print(f"   -> Generated {len(chunks)} chunks")
     
-    # 2. Build Retriever
-    # Mock config to ensure dense is enabled
-    mock_config = {
-        "retrieval": {
-            "dense": {"enabled": True},
-            "parent_document_retrieval": {"enabled": False}, # We evaluate pure chunk retrieval precision
-            "adaptive_threshold": False # Disable for fair comparison of recall
-        },
-        "ollama": {"host": "http://localhost:11434"} # Assumes Ollama is running
-    }
+    # Convert to LangChain Documents
+    lc_docs = [Document(page_content=c['page_content'], metadata=c.get('metadata', {})) for c in chunks]
     
-    # Note: We pass None for parent_docs because we want to evaluate the CHUNKS' ability to be found.
-    # If we enabled PDR, we'd be evaluating the parent doc mapping, which is a second step.
-    retriever = create_retriever(chunks, language, mock_config.get("retrieval"))
+    # 2. Build Retrievers (HF + BM25)
+    # Use standard HF models that are close proxies to Gemma/Qwen
+    if language == 'zh':
+        model_name = "BAAI/bge-large-zh-v1.5"
+        preprocess = preprocess_text_zh
+    else:
+        model_name = "sentence-transformers/all-MiniLM-L6-v2"
+        preprocess = preprocess_text_en
+        
+    print(f"   -> Embedding with {model_name} (HF)...")
+    embeddings = HuggingFaceEmbeddings(model_name=model_name)
+    vectorstore = FAISS.from_documents(lc_docs, embeddings)
+    dense_retriever = vectorstore.as_retriever(search_kwargs={"k": 100})
+    
+    bm25_retriever = BM25Retriever.from_documents(lc_docs, preprocess_func=preprocess)
+    bm25_retriever.k = 100
+    
+    ensemble_retriever = EnsembleRetriever(
+        retrievers=[bm25_retriever, dense_retriever],
+        weights=[0.5, 0.5]
+    )
     
     # 3. Evaluate Recall
     hits = 0
@@ -74,16 +94,16 @@ def evaluate_chunk_size(
         if not ground_truth_doc_ids:
             continue
             
-        results, _ = retriever.retrieve(query_text, top_k=top_k)
+        results = ensemble_retriever.invoke(query_text)
+        top_results = results[:top_k]
         
         # Check if any retrieved chunk belongs to a ground truth doc
         retrieved_doc_ids = set()
-        for res in results:
-            doc_idx = res["metadata"].get("doc_idx")
+        for res in top_results:
+            doc_idx = res.metadata.get("doc_idx")
             if doc_idx is not None:
                 retrieved_doc_ids.add(doc_idx)
         
-        # Hit if there is intersection
         if not ground_truth_doc_ids.isdisjoint(retrieved_doc_ids):
             hits += 1
         total += 1
@@ -93,7 +113,7 @@ def evaluate_chunk_size(
     return recall
 
 def main():
-    parser = argparse.ArgumentParser(description="Auto-tune Chunk Size for RAG")
+    parser = argparse.ArgumentParser(description="Auto-tune Chunk Size for RAG (Colab/HF Version)")
     parser.add_argument('--docs_path', type=str, required=True, help='Path to dragonball_docs.jsonl')
     parser.add_argument('--queries_path', type=str, required=True, help='Path to dragonball_queries.jsonl')
     parser.add_argument('--language', type=str, required=True, choices=['en', 'zh'])
@@ -113,7 +133,6 @@ def main():
     results = {}
     
     for size in chunk_sizes:
-        # Rule of thumb: overlap is ~15-20% of chunk size
         overlap = int(size * 0.15)
         score = evaluate_chunk_size(size, overlap, docs, queries, args.language)
         results[size] = score
