@@ -57,14 +57,23 @@ def main(query_path: str, docs_path: str, language: str, output_path: str) -> No
         print(f"✓ Loaded {len(queries)} queries\n")
 
         # 2. Chunk Documents
-        print("✂️  Chunking documents with semantic boundaries...")
+        chunk_size_en = retrieval_config.get("chunk_size_en", 600)
+        chunk_overlap_en = retrieval_config.get("chunk_overlap_en", 100)
+        chunk_size_zh = retrieval_config.get("chunk_size_zh", 384)
+        chunk_overlap_zh = retrieval_config.get("chunk_overlap_zh", 64)
+        
+        print(f"Chunk Size (EN): {chunk_size_en}, Overlap (EN): {chunk_overlap_en}")
+        print(f"Chunk Size (ZH): {chunk_size_zh}, Overlap (ZH): {chunk_overlap_zh}")
+        
+        print("✂️  Chunking documents with language-specific settings...")
         try:
             chunks = chunk_documents(
                 docs_for_chunking,
                 language,
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-                ollama_config=config.get("ollama"),
+                chunk_size_en=chunk_size_en,
+                chunk_overlap_en=chunk_overlap_en,
+                chunk_size_zh=chunk_size_zh,
+                chunk_overlap_zh=chunk_overlap_zh,
             )
         except Exception as e:
             print(f"❌ Error during chunking: {e}")
@@ -107,6 +116,8 @@ def main(query_path: str, docs_path: str, language: str, output_path: str) -> No
                     retrieved_chunks, retrieval_debug = retriever.retrieve(query_text, top_k=top_k)
                 except Exception as e:
                     print(f"⚠️  Retrieval error for query '{query_text[:50]}...': {e}")
+                    import traceback
+                    traceback.print_exc()
                     retrieved_chunks = []
                     retrieval_debug = {}
                 

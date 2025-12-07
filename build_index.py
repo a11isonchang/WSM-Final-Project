@@ -4,10 +4,63 @@ import numpy as np
 import argparse
 import sys
 from tqdm import tqdm
-from utils import load_jsonl
-from chunker import chunk_documents
-from config import load_config
-from retriever import create_retriever  # We'll use parts of this or duplicate logic
+from My_RAG.utils import load_jsonl
+from My_RAG.chunker import chunk_documents
+from My_RAG.config import load_config
+from ollama import Client
+import numpy as np
+
+class OllamaEmbeddings:
+    """Wrapper for Ollama embeddings to match SentenceTransformer interface."""
+    def __init__(self, model: str, base_url: str):
+        self.client = Client(host=base_url)
+        self.model = model
+
+    def encode(self, sentences, batch_size=32, convert_to_numpy=True, normalize_embeddings=False, show_progress_bar=False):
+        is_single = isinstance(sentences, str)
+        inputs = [sentences] if is_single else sentences
+        
+        embeddings = []
+        # show_progress_bar logic could be added here but keeping it simple
+        iterator = tqdm(inputs, desc="Ollama Embedding") if show_progress_bar else inputs
+        
+        for text in iterator:
+            try:
+                if not text or not text.strip():
+                    embeddings.append(None) 
+                    continue
+
+                response = self.client.embeddings(model=self.model, prompt=text)
+                emb = response.get('embedding')
+                if not emb:
+                    embeddings.append(None)
+                else:
+                    embeddings.append(emb)
+            except Exception as e:
+                print(f"Warning: Embedding failed for text '{text[:20]}...': {e}")
+                embeddings.append(None)
+            
+        # Fix None values
+        valid_embs = [e for e in embeddings if e is not None]
+        dim = len(valid_embs[0]) if valid_embs else 768
+        
+        final_embeddings = []
+        for e in embeddings:
+            if e is None:
+                final_embeddings.append(np.zeros(dim))
+            else:
+                final_embeddings.append(e)
+            
+        result = np.array(final_embeddings)
+        
+        if normalize_embeddings:
+            norm = np.linalg.norm(result, axis=1, keepdims=True)
+            norm[norm == 0] = 1.0 
+            result = result / norm
+
+        if is_single:
+            return result[0]
+        return result
 
 def build_and_save_index(docs_path, language, output_dir):
     """
@@ -32,8 +85,9 @@ def build_and_save_index(docs_path, language, output_dir):
 
     print(f"\n{'='*60}")
     print(f"Building FAISS Index for {language}")
-    print(f"Model: {dense_config.get('model_zh') if language == 'zh' else dense_config.get('model_en')}")
-    print(f"{ '='*60}\n")
+    model_name = dense_config.get('model_zh') if language == 'zh' else dense_config.get('model_en')
+    print(f"Model: {model_name}")
+    print(f"{'='*60}\n")
 
     # 2. Load Documents
     print("📂 Loading documents...")
@@ -59,26 +113,20 @@ def build_and_save_index(docs_path, language, output_dir):
 
     # 4. Initialize Embedding Model
     print("🧠 Initializing embedding model...")
-    # We re-use logic from retriever.py effectively by instantiating just the model part
-    # Or simpler: we create a temporary retriever just to access its model loading logic
-    # BUT we need to be careful not to trigger the automatic index build in __init__
     
-    # Let's manually load the model to be safe and explicit
     try:
-        from sentence_transformers import SentenceTransformer
-        
-        if language == "zh":
-            model_name = dense_config.get("model_zh") or dense_config.get("model")
+        if "embeddinggemma" in model_name or "qwen" in model_name or dense_config.get("type") == "ollama":
+            host = config.get("ollama", {}).get("host") or "http://localhost:11434"
+            print(f"   Loading Ollama model: {model_name} at {host}")
+            model = OllamaEmbeddings(model=model_name, base_url=host)
         else:
-            model_name = dense_config.get("model_en") or dense_config.get("model")
-            
-        device = "cuda" if dense_config.get("use_gpu", False) else "cpu"
-        print(f"   Loading model: {model_name} on {device}")
-        
-        model = SentenceTransformer(model_name, device=device)
+            from sentence_transformers import SentenceTransformer
+            device = "cuda" if dense_config.get("use_gpu", False) else "cpu"
+            print(f"   Loading HF model: {model_name} on {device}")
+            model = SentenceTransformer(model_name, device=device)
         
     except ImportError:
-        print("❌ sentence-transformers not installed.")
+        print("❌ sentence-transformers or ollama not installed.")
         sys.exit(1)
     except Exception as e:
         print(f"❌ Error loading model: {e}")

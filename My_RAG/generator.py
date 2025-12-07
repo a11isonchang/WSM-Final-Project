@@ -92,7 +92,7 @@ def _create_prompt_zh(query: str, context: str) -> str:
 **問題：**
 {query}
 
-**答案：**
+**回答：**
 """
 
 

@@ -1,80 +1,57 @@
-from langchain_experimental.text_splitter import SemanticChunker
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_ollama import OllamaEmbeddings
-from langchain_core.documents import Document
-from typing import Dict, Optional
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from typing import List, Dict, Any
 
+def chunk_documents(docs: List[Dict[str, Any]], language: str, 
+                    chunk_size_en: int = 600, chunk_overlap_en: int = 100,
+                    chunk_size_zh: int = 384, chunk_overlap_zh: int = 64) -> List[Dict[str, Any]]:
+    # Define separators for mixed language support
+    SEPARATORS_EN = ["\n\n", "\n", ".", "?", "!", " ", ""]
+    SEPARATORS_ZH = ["\n\n", "\n", "。", "！", "？", "；", "：", "，", "、", " "]
 
-# Default embedding models for semantic chunking
-OLLAMA_EMBED_MODELS = {
-    "en": "embeddinggemma:300m",
-    "zh": "qwen3-embedding:0.6b",
-}
-
-FALLBACK_EMBED_MODELS = {
-    "en": "sentence-transformers/all-MiniLM-L6-v2",
-    "zh": "intfloat/multilingual-e5-large",
-}
-
-
-def get_embedding_model(language: str, ollama_config: Optional[Dict] = None):
-    """
-    Prefer local Ollama embeddings for semantic chunking, fall back to
-    lightweight HF models if Ollama is unavailable.
-    """
-    lang_key = "zh" if language == "zh" else "en"
-    model_name = OLLAMA_EMBED_MODELS[lang_key]
-    host = None
-    if ollama_config:
-        host = ollama_config.get("host") or host
-
-    try:
-        return OllamaEmbeddings(model=model_name, base_url=host)
-    except Exception as exc:
-        print(f"Warning: Ollama embeddings '{model_name}' unavailable ({exc}); using HuggingFace fallback.")
-        fallback_model = FALLBACK_EMBED_MODELS[lang_key]
-        return HuggingFaceEmbeddings(
-            model_name=fallback_model,
-            model_kwargs={"device": "cpu"},
-        )
-
-
-def chunk_documents(docs, language, chunk_size=1000, chunk_overlap=200, ollama_config: Optional[Dict] = None):
-    """
-    Chunk using LangChain SemanticChunker (percentile=92 for ~sentence boundaries).
-    Falls back to RecursiveCharacterTextSplitter if semantic fails.
-    """
+    # Pre-initialize splitters
+    # English Splitter
+    splitter_en = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size_en,
+        chunk_overlap=chunk_overlap_en,
+        separators=SEPARATORS_EN,
+        keep_separator="end",
+        strip_whitespace=True
+    )
+    
+    # Chinese Splitter
+    splitter_zh = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size_zh,
+        chunk_overlap=chunk_overlap_zh,
+        separators=SEPARATORS_ZH,
+        keep_separator="end",
+        strip_whitespace=True
+    )
+    
     chunks = []
-    embedding_model = get_embedding_model(language, ollama_config)
-
-    try:
-        text_splitter = SemanticChunker(
-            embedding_model,
-            breakpoint_threshold_type="percentile",
-            breakpoint_threshold_amount=92,  # Tune for sentence-level
-        )
-    except Exception:
-        # Fallback to old recursive
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
-        separators = ["\n\n", "\n", " ", ""] if language != "zh" else ["\n\n", "\n", "。", "！", "？", " ", ""]
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size, chunk_overlap=chunk_overlap, separators=separators
-        )
-
-    for doc_idx, doc in enumerate(docs):
-        if 'content' not in doc or not isinstance(doc['content'], str) or doc.get('language') != language:
-            continue
-
-        text = doc['content']
-        doc_meta = doc.copy()
-        doc_meta.pop('content', None)
-
-        split_texts = text_splitter.split_text(text)
-        for i, chunk_content in enumerate(split_texts):
-            chunk = Document(
-                page_content=chunk_content,
-                metadata={**doc_meta, 'chunk_index': i, 'doc_idx': doc_idx}
-            )
-            chunks.append(chunk.dict())  # Convert back to dict for compatibility
-
+    
+    for doc_index, doc in enumerate(docs):
+        if 'content' in doc and isinstance(doc['content'], str) and 'language' in doc:
+            text = doc['content']
+            lang = doc['language']
+            
+            # Select appropriate splitter based on the document's language
+            if lang == 'zh':
+                splitter = splitter_zh
+            else: # Default to English splitter for other languages or if language not explicitly 'zh'
+                splitter = splitter_en
+            
+            if lang == language: # Only process documents matching the target language for the run
+                doc_chunks = splitter.split_text(text)
+                for i, chunk_text in enumerate(doc_chunks):
+                    chunk_metadata = doc.copy()
+                    chunk_metadata.pop('content', None) # Remove 'content' to avoid redundancy in metadata
+                    chunk_metadata['chunk_index'] = i
+                    chunk_metadata['doc_idx'] = doc_index # Add doc_idx for Parent Document Retrieval
+                    
+                    chunk = {
+                        'page_content': chunk_text,
+                        'metadata': chunk_metadata
+                    }
+                    chunks.append(chunk)
+                    
     return chunks
