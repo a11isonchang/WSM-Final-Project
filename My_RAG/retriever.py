@@ -12,6 +12,11 @@ from collections import Counter
 from ollama import Client
 
 try:
+    import faiss  # type: ignore
+except Exception:
+    faiss = None
+
+try:
     import opencc
 except ImportError:
     opencc = None
@@ -136,14 +141,24 @@ class HybridRetriever:
         query_expansion_config: Optional[Dict[str, Any]] = None,
         hyde_config: Optional[Dict[str, Any]] = None,
         multi_query_config: Optional[Dict[str, Any]] = None,
+        keyword_boost_config: Optional[Dict[str, Any]] = None,
+        parent_docs: Optional[List[Dict[str, Any]]] = None,
+        pdr_config: Optional[Dict[str, Any]] = None,
     ):
         self.chunks = chunks
         self.language = language
+        self.parent_docs = parent_docs
+        self.pdr_config = pdr_config or {}
         self.corpus = [chunk.get("page_content", "") for chunk in chunks]
         self.weights = weights or {"tfidf": 0, "bm25": 1, "jm": 0}
         self.candidate_multiplier = max(1.0, candidate_multiplier)
         self.prf_top_k = max(0, int(prf_top_k))
         self.prf_term_count = max(0, int(prf_term_count))
+
+        # ===== Keyword Boost Config =====
+        self.keyword_boost_config = keyword_boost_config or {}
+        self.doc_boosts = np.ones(len(self.chunks), dtype=np.float32)
+        self._init_keyword_boost()
 
         # ===== Dense Bi-Encoder 設定 =====
         self.dense_config = dense_config or {}
@@ -154,6 +169,10 @@ class HybridRetriever:
         self.dense_query_prefix = self.dense_config.get("query_prefix", "query: ")
         self.dense_passage_prefix = self.dense_config.get("passage_prefix", "passage: ")
         self.dense_strategy = self.dense_config.get("strategy", "rerank")  # "rerank" or "dense_only"
+        self.use_faiss = self.dense_config.get("type") == "faiss"
+        self.use_faiss_gpu = bool(self.dense_config.get("use_gpu", False))
+        self.faiss_index = None
+        self.faiss_metric = "ip"
 
         # ===== Cross Encoder 設定 =====
         self.cross_encoder_config = cross_encoder_config or {}
@@ -199,8 +218,32 @@ class HybridRetriever:
 
         # 初始化 reranker & LLM
         self._init_dense_encoder()
+        self._build_faiss_index()
         self._init_cross_encoder()
         self._init_llm_client()
+
+    def _init_keyword_boost(self):
+        """Pre-calculate document boost scores based on keywords."""
+        if not self.keyword_boost_config.get("enabled", False):
+            return
+
+        keywords = self.keyword_boost_config.get("keywords", [])
+        if not keywords:
+            return
+
+        boost_factor = float(self.keyword_boost_config.get("boost_factor", 1.2))
+        print(f"Initializing keyword boost for {len(keywords)} keywords with factor {boost_factor}")
+
+        # Iterate through all documents and keywords
+        # This is done once during initialization
+        for i, content in enumerate(self.corpus):
+            # Normalize content for matching if needed (e.g. lowercase)
+            content_lower = content.lower()
+            
+            for keyword in keywords:
+                if keyword.lower() in content_lower:
+                    self.doc_boosts[i] *= boost_factor
+
 
     def _init_llm_client(self):
         """Initialize Ollama client if query expansion is enabled."""
@@ -255,6 +298,56 @@ class HybridRetriever:
             self.dense_model = SentenceTransformer(model_name, device=device)
         else:
             self.dense_model = SentenceTransformer(model_name)
+
+    def _build_faiss_index(self):
+        """Pre-compute dense embeddings into a FAISS index if enabled."""
+        if not self.use_faiss:
+            return
+        if not faiss:
+            print("Warning: FAISS not installed; skipping dense FAISS index.")
+            return
+        if not self.dense_model:
+            print("Warning: Dense model not initialized; skipping FAISS index.")
+            return
+
+        try:
+            passages = [
+                f"{self.dense_passage_prefix}{chunk.get('page_content', '')}"
+                for chunk in self.chunks
+            ]
+            if not passages:
+                return
+
+            embeddings = self.dense_model.encode(
+                passages,
+                batch_size=self.dense_batch_size,
+                convert_to_numpy=True,
+                normalize_embeddings=self.dense_normalize,
+                show_progress_bar=False,
+            )
+            embeddings = np.nan_to_num(embeddings, nan=0.0, posinf=0.0, neginf=0.0).astype(
+                np.float32
+            )
+
+            self.faiss_metric = "ip" if self.dense_normalize else "l2"
+            if self.faiss_metric == "ip":
+                index = faiss.IndexFlatIP(embeddings.shape[1])
+            else:
+                index = faiss.IndexFlatL2(embeddings.shape[1])
+
+            # Move to GPU if requested and available
+            if self.use_faiss_gpu and hasattr(faiss, "StandardGpuResources"):
+                try:
+                    res = faiss.StandardGpuResources()
+                    index = faiss.index_cpu_to_gpu(res, 0, index)
+                except Exception as gpu_exc:
+                    print(f"Warning: Failed to move FAISS index to GPU: {gpu_exc}")
+
+            index.add(embeddings)
+            self.faiss_index = index
+        except Exception as e:
+            print(f"Warning: Failed to build FAISS index: {e}")
+            self.faiss_index = None
 
     def _init_cross_encoder(self):
         """Load the cross encoder lazily if configured."""
@@ -386,6 +479,10 @@ class HybridRetriever:
         
         final_scores = (a * norm_tfidf) + (b * norm_bm25) + (c * norm_jm)
         
+        # Apply Keyword Boost
+        if self.keyword_boost_config.get("enabled", False):
+            final_scores = final_scores * self.doc_boosts
+        
         return final_scores, (bm25_raw, tfidf_raw, jm_raw)
 
     def _dense_rerank(self, query_text: str, candidate_indices: np.ndarray):
@@ -446,6 +543,72 @@ class HybridRetriever:
             # Log warning and fall back to original ranking
             print(f"Warning: Dense reranking failed: {e}. Falling back to hybrid scores.")
             return candidate_indices, {}
+
+    def _dense_search_faiss(self, query_text: str, candidate_indices: Optional[np.ndarray], top_k: int):
+        """
+        Use FAISS to retrieve dense results. If candidate_indices is provided,
+        filter FAISS hits to that subset; otherwise run dense-only.
+        """
+        if not self.faiss_index or not self.dense_model:
+            return np.array([]), {}
+
+        clean_query = query_text.strip()
+        if not clean_query:
+            return np.array([]), {}
+
+        try:
+            query_payload = f"{self.dense_query_prefix}{clean_query}"
+            query_embedding = self.dense_model.encode(
+                query_payload,
+                convert_to_numpy=True,
+                normalize_embeddings=self.dense_normalize,
+                show_progress_bar=False,
+            )
+            query_embedding = np.nan_to_num(query_embedding, nan=0.0, posinf=0.0, neginf=0.0).astype(
+                np.float32
+            )
+            if query_embedding.ndim == 1:
+                query_embedding = query_embedding[None, :]
+
+            # Search a bit deeper if filtering to candidates
+            search_k = min(len(self.chunks), max(top_k * 5, top_k))
+            scores, indices = self.faiss_index.search(query_embedding, search_k)
+            faiss_scores = scores[0]
+            faiss_indices = indices[0]
+
+            results = []
+            if candidate_indices is not None:
+                candidate_set = set(int(i) for i in np.asarray(candidate_indices))
+                for idx, score in zip(faiss_indices, faiss_scores):
+                    if idx == -1:
+                        continue
+                    if idx in candidate_set:
+                        results.append((idx, score))
+                    if len(results) >= top_k:
+                        break
+                # If no overlap, fall back to candidates in original order
+                if not results:
+                    return np.asarray(candidate_indices)[:top_k], {}
+            else:
+                for idx, score in zip(faiss_indices, faiss_scores):
+                    if idx == -1:
+                        continue
+                    results.append((idx, score))
+
+            # Convert distances to similarity if needed
+            dense_scores = {}
+            ordered_indices = []
+            for idx, score in results:
+                sim = float(-score) if self.faiss_metric == "l2" else float(score)
+                dense_scores[idx] = sim
+                ordered_indices.append(idx)
+
+            # Sort by similarity descending
+            ordered_indices = sorted(ordered_indices, key=lambda i: dense_scores[i], reverse=True)
+            return np.array(ordered_indices), dense_scores
+        except Exception as e:
+            print(f"Warning: FAISS dense search failed: {e}")
+            return np.array([]), {}
 
     def _cross_encoder_rerank(self, query_text: str, candidate_indices: np.ndarray):
         """
@@ -709,6 +872,18 @@ Original question: {query}"""
             reranked_indices, dense_scores = self._cross_encoder_rerank(
                 dense_query_text, candidate_indices
             )
+        elif self.use_faiss and self.faiss_index:
+            rank_basis = "dense_faiss"
+            if self.dense_strategy == "dense_only":
+                reranked_indices, dense_scores = self._dense_search_faiss(
+                    dense_query_text, None, top_k
+                )
+            else:
+                reranked_indices, dense_scores = self._dense_search_faiss(
+                    dense_query_text, candidate_indices, top_k
+                )
+            if reranked_indices.size == 0:
+                reranked_indices = candidate_indices
         elif self.dense_model and candidate_indices.size > 0:
             rank_basis = "dense"
             reranked_indices, dense_scores = self._dense_rerank(
@@ -718,7 +893,54 @@ Original question: {query}"""
             reranked_indices = candidate_indices
 
         # Final Selection
-        top_indices = reranked_indices[:top_k]
+        # --- PARENT DOCUMENT RETRIEVAL LOGIC ---
+        use_pdr = self.pdr_config.get("enabled", False)
+        
+        if use_pdr and self.parent_docs:
+            selected_docs = []
+            seen_parent_ids = set()
+            final_top_indices = [] # Track which chunks triggered the parents
+            
+            # Iterate through ranked chunks and pick unique parents until we hit top_k
+            count = 0
+            for idx in reranked_indices:
+                if count >= top_k:
+                    break
+                    
+                chunk = self.chunks[idx]
+                parent_id = chunk.get("metadata", {}).get("doc_idx")
+                
+                if parent_id is not None and 0 <= parent_id < len(self.parent_docs):
+                    if parent_id not in seen_parent_ids:
+                        seen_parent_ids.add(parent_id)
+                        
+                        # Get parent doc
+                        p_doc = self.parent_docs[parent_id]
+                        
+                        # Normalize parent doc to have 'page_content' if it only has 'content'
+                        # We create a shallow copy to avoid modifying original if possible, 
+                        # but for performance/memory we might just wrap it.
+                        # Assuming structure matches input jsonl
+                        content = p_doc.get("content", "") or p_doc.get("page_content", "")
+                        
+                        # Create a standardized dict for generation
+                        ret_doc = {
+                            "page_content": content,
+                            "metadata": p_doc, # Store full original doc as metadata
+                            # inherited metadata from chunk? No, this is the parent.
+                        }
+                        
+                        selected_docs.append(ret_doc)
+                        final_top_indices.append(idx)
+                        count += 1
+            
+            top_indices = np.array(final_top_indices) if final_top_indices else np.array([])
+            selected = selected_docs
+            rank_basis += "_parent_doc"
+
+        else:
+            top_indices = reranked_indices[:top_k]
+            selected = [self.chunks[i] for i in top_indices]
         
         retrieval_debug = {
             "language": self.language,
@@ -731,47 +953,32 @@ Original question: {query}"""
             "dense": {
                 "enabled": bool(self.dense_model),
                 "model": getattr(self, "actual_dense_model_name", self.dense_config.get("model")),
+                "backend": "faiss" if self.use_faiss else "encoder",
+            },
+            "pdr": {
+                "enabled": bool(use_pdr),
+                "parent_docs_available": bool(self.parent_docs)
             },
             "results": [
                 {
-                    "metadata": self.chunks[i].get("metadata", {}),
-                    "preview": self.chunks[i].get("page_content", "")[:200],
-                    "score": dense_scores.get(i, float(final_scores[i])),
+                    "metadata": self.chunks[i].get("metadata", {}) if i < len(self.chunks) else {},
+                    "preview": selected[n].get("page_content", "")[:200] if use_pdr else self.chunks[i].get("page_content", "")[:200],
+                    "score": dense_scores.get(i, float(final_scores[i])) if i in dense_scores or i < len(final_scores) else 0.0,
+                    "chunk_preview": self.chunks[i].get("page_content", "")[:100] if use_pdr else None
                 }
-                for i in top_indices
+                for n, i in enumerate(top_indices)
             ],
         }
         
-        return top_indices, retrieval_debug
+        return selected, retrieval_debug
 
 
-def create_retriever(chunks, language, config=None):
+def create_retriever(chunks, language, config=None, parent_docs=None):
     config = config or {}
     weights = config.get("weights", {"tfidf": 0, "bm25": 1, "jm": 0})
     dense_config = config.get("dense", {})
     cross_encoder_config = config.get("cross_encoder", {})
-    ollama_config = config.get("ollama", {}) # Need to pass global ollama config
-    # Retrieve query expansion config from 'retrieval' section if it exists there?
-    # config passed here IS the 'retrieval' section usually? 
-    # No, in main.py: retrieval_config = config.get("retrieval", {})
-    # So 'ollama' is NOT in 'config' here. 
-    # I need to fix main.py or pass it here.
-    
-    # Actually, main.py loads full config. Let's see main.py again.
-    # main.py: 
-    # config = load_config()
-    # retrieval_config = config.get("retrieval", {})
-    # ... 
-    # retriever = create_retriever(chunks, language, retrieval_config)
-    
-    # So 'ollama' is missing. I need to update main.py to pass 'ollama' config to create_retriever
-    # For now, I'll handle it in create_retriever by re-loading config if needed or passing None.
-    # But better is to fix main.py.
-    
-    # Wait, I can import load_config here inside create_retriever if needed? 
-    # Or better, update main.py to pass the whole config or just the ollama part.
-    
-    # Let's assume for now I'll fix main.py next.
+    ollama_config = config.get("ollama", {}) 
     
     return HybridRetriever(
         chunks,
@@ -789,4 +996,7 @@ def create_retriever(chunks, language, config=None):
         query_expansion_config=config.get("query_expansion", {}),
         hyde_config=config.get("hyde", {}),
         multi_query_config=config.get("multi_query", {}),
+        keyword_boost_config=config.get("keyword_boost", {}),
+        parent_docs=parent_docs,
+        pdr_config=config.get("parent_document_retrieval", {}),
     )

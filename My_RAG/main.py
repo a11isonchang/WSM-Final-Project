@@ -64,6 +64,7 @@ def main(query_path: str, docs_path: str, language: str, output_path: str) -> No
                 language,
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
+                ollama_config=config.get("ollama"),
             )
         except Exception as e:
             print(f"❌ Error during chunking: {e}")
@@ -78,7 +79,7 @@ def main(query_path: str, docs_path: str, language: str, output_path: str) -> No
         # 3. Create Retriever
         print("🔍 Creating hybrid retriever...")
         try:
-            retriever = create_retriever(chunks, language, retrieval_config)
+            retriever = create_retriever(chunks, language, retrieval_config, parent_docs=docs_for_chunking)
         except Exception as e:
             print(f"❌ Error creating retriever: {e}")
             sys.exit(1)
