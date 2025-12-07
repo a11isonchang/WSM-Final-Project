@@ -153,6 +153,7 @@ class HybridRetriever:
         self.dense_normalize = bool(self.dense_config.get("normalize", True))
         self.dense_query_prefix = self.dense_config.get("query_prefix", "query: ")
         self.dense_passage_prefix = self.dense_config.get("passage_prefix", "passage: ")
+        self.dense_strategy = self.dense_config.get("strategy", "rerank")  # "rerank" or "dense_only"
 
         # ===== Cross Encoder 設定 =====
         self.cross_encoder_config = cross_encoder_config or {}
