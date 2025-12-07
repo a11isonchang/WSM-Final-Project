@@ -14,8 +14,15 @@ ENGLISH_STOP_WORDS_SET = set(ENGLISH_STOP_WORDS)
 
 @lru_cache()
 def load_chinese_stop_words() -> set:
-    from jieba import analyse
 
+    custom_stopwords_path = Path(__file__).parent / "stopwords_learned_zh.txt"
+
+    if custom_stopwords_path.exists():
+       with custom_stopwords_path.open("r", encoding="utf-8") as f:
+           stop_words = {line.strip() for line in f if line.strip()}
+       return stop_words
+    
+    from jieba import analyse
     stop_words_path = getattr(analyse, "STOP_WORDS_PATH", None)
     if not stop_words_path:
         stop_words_path = Path(analyse.__file__).resolve().parent / "stop_words.utf8"
