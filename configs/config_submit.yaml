@@ -5,14 +5,14 @@ ollama:
 retrieval:
   chunk_size: 1000
   chunk_overlap: 200
-  top_k: 5
-  debug: true
+  top_k: 3
+  debug: false
   
   # Hybrid Retrieval Weights (a*TF-IDF + b*BM25 + c*JM = 1)
   weights:
-    tfidf: 0.4  # a
-    bm25: 0.4   # b
-    jm: 0.2     # c
+    tfidf: 0  # a
+    bm25: 1   # b
+    jm: 0     # c
 
   # Pseudo-Relevance Feedback (PRF)
   prf_top_k: 0
@@ -27,6 +27,12 @@ retrieval:
     enabled: false
     num_versions: 3
 
+  # Keyword Boosting
+  keyword_boost:
+    enabled: false
+    keywords: []
+    boost_factor: 0.3
+
   # Model Hyperparameters
   bm25:
     k1: 1.5
@@ -35,10 +41,18 @@ retrieval:
   jm:
     lambda: 0.5
 
+  # Cross-Encoder Reranking
+  cross_encoder:
+    enabled: true
+    model: "My_RAG/models/ms-marco-MiniLM-L-6-v2" # Pointing to the locally downloaded model
+    batch_size: 32
+    device: "cuda" # Change to "cuda" if you have a GPU
+
   # Dense re-ranking configuration (runs after lexical stage)
   dense:
-    enabled: true
-    type: "ollama"
+    enabled: false # Disabled to prioritize Cross-Encoder
+    type: "faiss"      # FAISS dense retrieval (uses GPU if available)
+    use_gpu: true      # Set false to force CPU FAISS
     # Language-specific models
     model_en: "embeddinggemma:300m"
     model_zh: "qwen3-embedding:0.6b"
@@ -50,4 +64,8 @@ retrieval:
     query_prefix: "search_query: "
     passage_prefix: "search_document: "
 
-  candidate_multiplier: 20.0
+  candidate_multiplier: 50.0 # Increased candidates for Cross-Encoder
+
+  # Parent Document Retrieval
+  parent_document_retrieval:
+    enabled: true # Enabled for full context

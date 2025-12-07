@@ -16,3 +16,6 @@ numpy==2.2.6
 langchain
 langchain-community
 langchain-text-splitters
+opencc-python-reimplemented
+faiss-cpu
+langchain-experimental
