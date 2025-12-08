@@ -1,0 +1,8 @@
+Factual Question
+Irrelevant Unsolvable Question
+Multi-document Comparison Question
+Multi-document Information Integration Question
+Multi-document Time Sequence Question
+Multi-hop Reasoning Question
+Summarization Question
+Summary Question

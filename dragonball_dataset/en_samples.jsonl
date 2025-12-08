@@ -1,0 +1,235 @@
+[
+  {
+    "domain": "Medical",
+    "language": "en",
+    "query": {
+      "query_id": 6257,
+      "query_type": "Factual Question",
+      "content": "According to the hospitalization records of Windsor General Hospital, what is K. Ramos's initial diagnosis?"
+    },
+    "ground_truth": {
+      "doc_ids": [
+        213
+      ],
+      "content": "Acute Osteomyelitis.",
+      "references": [
+        "Acute Osteomyelitis",
+        "Diagnostic Basis:",
+        "Diagnosis based on patient's history of sudden severe bone pain, physical examination findings of localized redness and swelling over the femur, elevated temperature, and X-ray indicating periosteal reaction."
+      ],
+      "keypoints": [
+        "1. K. Ramos's initial diagnosis is Acute Osteomyelitis."
+      ]
+    },
+    "prediction": {
+      "content": "",
+      "references": []
+    }
+  },
+  {
+    "domain": "Law",
+    "language": "en",
+    "query": {
+      "query_id": 4854,
+      "query_type": "Irrelevant Unsolvable Question",
+      "content": "According to the judgment of Lakewood, Mayfield, Court and Riverton, Hamilton, Court, whose judgment time is earlier, X. Alvarez or H. Walker?"
+    },
+    "ground_truth": {
+      "doc_ids": [
+        128,
+        119
+      ],
+      "content": "Unable to answer.",
+      "references": [],
+      "keypoints": [
+        "1. Unable to answer."
+      ]
+    },
+    "prediction": {
+      "content": "",
+      "references": []
+    }
+  },
+  {
+    "domain": "Law",
+    "language": "en",
+    "query": {
+      "query_id": 5014,
+      "query_type": "Multi-document Comparison Question",
+      "content": "According to the judgment of Greenfield, Fairview, Court and Trenton, Vandalia, Court, who received a longer sentence, H. Price or G. Torres?"
+    },
+    "ground_truth": {
+      "doc_ids": [
+        121,
+        122
+      ],
+      "content": "H. Price received a longer sentence.",
+      "references": [
+        "- **Imprisonment:** Eight (8) years",
+        "**Sentence**: Three years of fixed-term imprisonment, suspended for five years, and a fine of $30,000."
+      ],
+      "keypoints": [
+        "1. H. Price received a longer sentence."
+      ]
+    },
+    "prediction": {
+      "content": "",
+      "references": []
+    }
+  },
+  {
+    "domain": "Finance",
+    "language": "en",
+    "query": {
+      "query_id": 3555,
+      "query_type": "Multi-document Information Integration Question",
+      "content": "What were the net profits of MediaCorp in 2018 and GreenTech Solutions Inc. in 2021?"
+    },
+    "ground_truth": {
+      "doc_ids": [
+        72,
+        63
+      ],
+      "content": "The net profit of MediaCorp in 2018 was $150 million, and the net profit of GreenTech Solutions Inc. in 2021 was $30 million.",
+      "references": [
+        "Additionally, the net profit for the year stood at $150 million, showcasing the company's ability to effectively control costs and generate substantial returns.",
+        "The impact of these partnerships can be seen in the company's net profit, which reached $30 million.",
+        "This strong financial performance can be attributed to the company's effective cost control measures and the absence of major non-recurring gains and losses."
+      ],
+      "keypoints": [
+        "1. The net profit of MediaCorp in 2018 was $150 million.",
+        "2. The net profit of GreenTech Solutions Inc. in 2021 was $30 million."
+      ]
+    },
+    "prediction": {
+      "content": "",
+      "references": []
+    }
+  },
+  {
+    "domain": "Finance",
+    "language": "en",
+    "query": {
+      "query_id": 3512,
+      "query_type": "Multi-document Time Sequence Question",
+      "content": "Compare the times of corporate governance policy revisions for Evergreen Consumer Goods Co. and EcoGuard Solutions. Which company revised their policies earlier?"
+    },
+    "ground_truth": {
+      "doc_ids": [
+        43,
+        51
+      ],
+      "content": "Evergreen Consumer Goods Co. revised their corporate governance policies earlier in September 2017.",
+      "references": [
+        "In September 2017, Evergreen revised its corporate governance policy to enhance transparency, accountability, and stakeholder engagement.",
+        "To ensure effective governance, EcoGuard Solutions revised its corporate governance policies in April 2019, with a focus on reporting mechanisms, compliance, and accountability."
+      ],
+      "keypoints": [
+        "1. Evergreen Consumer Goods Co. revised their corporate governance policies earlier.",
+        "2. The revision took place in September 2017."
+      ]
+    },
+    "prediction": {
+      "content": "",
+      "references": []
+    }
+  },
+  {
+    "domain": "Medical",
+    "language": "en",
+    "query": {
+      "query_id": 6032,
+      "query_type": "Multi-hop Reasoning Question",
+      "content": "According to the hospitalization records of Kingsport General Hospital, how many diagnostic bases were used to diagnose A. Davis?"
+    },
+    "ground_truth": {
+      "doc_ids": [
+        187
+      ],
+      "content": "According to the records, A. Davis had 3 diagnostic bases: the chief complaint of sour, heavy, swollen, and painful right lower limb; the present illness details including pain, heaviness, and swelling in the right lower limb with raised and tortuous superficial veins; and the auxiliary examination of Doppler ultrasound confirming severe blood reflux in superficial veins.",
+      "references": [
+        "Sour, heavy, swollen, and painful right lower limb for 6 months; worsening over the last week.",
+        "Main Symptoms: Pain, heaviness, and swelling in the right lower limb, with raised and tortuous superficial veins, more pronounced when standing; symptoms exacerbate with prolonged standing and improve with leg elevation.",
+        "Doppler ultrasound confirmed severe blood reflux in superficial veins of the right lower limb."
+      ],
+      "keypoints": [
+        "1. A. Davis had 3 diagnostic bases.",
+        "2. Chief complaint: sour, heavy, swollen, and painful right lower limb.",
+        "3. Present illness: pain, heaviness, and swelling in the right lower limb with raised and tortuous superficial veins.",
+        "4. Auxiliary examination: Doppler ultrasound confirming severe blood reflux in superficial veins."
+      ]
+    },
+    "prediction": {
+      "content": "",
+      "references": []
+    }
+  },
+  {
+    "domain": "Medical",
+    "language": "en",
+    "query": {
+      "query_id": 6254,
+      "query_type": "Summarization Question",
+      "content": "According to the hospitalization records of Clearwater General Hospital, summarize the past history of J. Alvarez."
+    },
+    "ground_truth": {
+      "doc_ids": [
+        210
+      ],
+      "content": "J. Alvarez has been generally healthy for her age, managed hypertension. She has had hypertension for 10 years, managed with medication. She has no significant infectious diseases. Her immunization history is up-to-date with basic immunizations; Flu and Pneumococcal vaccines administered last year. She had a Cholecystectomy in 1980, no recent trauma, and no history of blood transfusion. She is allergic to Penicillin.",
+      "references": [
+        "Generally healthy for age, managed hypertension.",
+        "Hypertension for 10 years, managed with medication.",
+        "No significant infectious diseases.",
+        "Up-to-date with basic immunizations; flu and pneumococcal vaccines administered last year.",
+        "Cholecystectomy (1980), no recent trauma.",
+        "No history of blood transfusion.",
+        "Patient allergic to Penicillin."
+      ],
+      "keypoints": [
+        "1. J. Alvarez has been generally healthy for her age, with managed hypertension.",
+        "2. She has had hypertension for 10 years, managed with medication.",
+        "3. She has no significant infectious diseases.",
+        "4. Her immunization history is up-to-date with basic immunizations; Flu and Pneumococcal vaccines were administered last year.",
+        "5. She had a Cholecystectomy in 1980.",
+        "6. She has no recent trauma and no history of blood transfusion.",
+        "7. She is allergic to Penicillin."
+      ]
+    },
+    "prediction": {
+      "content": "",
+      "references": []
+    }
+  },
+  {
+    "domain": "Finance",
+    "language": "en",
+    "query": {
+      "query_id": 2310,
+      "query_type": "Summary Question",
+      "content": "Based on Acme Government Solutions' 2021 corporate governance report, summarize the company's risk management strategy."
+    },
+    "ground_truth": {
+      "doc_ids": [
+        40
+      ],
+      "content": "Acme Government Solutions' 2021 corporate governance report detailed a comprehensive risk management strategy. The company focused on strengthening its internal control system to identify, assess, monitor, and report risks effectively. Efforts were made to integrate sustainable development and social responsibility into the company's strategy. Additionally, significant investments were made in cybersecurity technologies and training to enhance the company's cybersecurity measures. These strategies aimed to mitigate risks and ensure the company's long-term stability and resilience.",
+      "references": [
+        "The company has also established a robust internal control system, safeguarding its assets and preventing financial misstatements.",
+        "The architecture, implementation, and effectiveness of this system have been continuously assessed to ensure its reliability and efficiency.",
+        "In terms of risk management strategy, Acme Government Solutions has focused on strengthening its internal control system, integrating sustainable development and social responsibility into its strategy, and enhancing cybersecurity measures.",
+        "These efforts aim to identify, assess, monitor, and report risks effectively, while also addressing emerging challenges in the digital landscape."
+      ],
+      "keypoints": [
+        "1. The company focused on strengthening its internal control system to identify, assess, monitor, and report risks effectively.",
+        "2. Efforts were made to integrate sustainable development and social responsibility into the company's strategy.",
+        "3. Significant investments were made in cybersecurity technologies and training to enhance cybersecurity measures.",
+        "4. These strategies aimed to mitigate risks and ensure the company's long-term stability and resilience."
+      ]
+    },
+    "prediction": {
+      "content": "",
+      "references": []
+    }
+  }
+]
