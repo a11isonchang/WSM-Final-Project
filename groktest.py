@@ -89,25 +89,34 @@ def process_dataset():
                 # 資料結構解析 (加上容錯)
                 content = None
                 q_id = None
+                q_type = None
                 
                 # 嘗試從標準結構讀取
                 if "query" in data and isinstance(data["query"], dict):
                     content = data["query"].get("content")
                     q_id = data["query"].get("query_id")
+                    q_type = data["query"].get("query_type")
                 # 嘗試從扁平結構讀取 (如果有的話)
                 elif "content" in data:
                     content = data["content"]
                     q_id = data.get("query_id")
+                    q_type = data.get("query_type")
 
                 if content:
                     # 呼叫 API
                     keywords = extract_keywords_with_openrouter(client, content)
                     
+                    # Determine unsolve
+                    unsolve = 0
+                    if q_type in ["Irrelevant Unsolvable Question", "无关无解问"]:
+                        unsolve = 1
+
                     # 建立新資料
                     new_record = {
                         "query_id": q_id,
                         "content": content,
-                        "keywords": keywords
+                        "keywords": keywords,
+                        "unsolve": unsolve
                     }
                     
                     f_out.write(json.dumps(new_record, ensure_ascii=False) + "\n")

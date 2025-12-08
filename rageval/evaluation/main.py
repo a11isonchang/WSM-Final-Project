@@ -45,7 +45,7 @@ def process_jsonl(input_file, output_file, evaluator_names, num_workers, use_ope
     else:
         items_to_process = [(item, language) for item in items if item["query"]["query_id"] not in processed_ids]
 
-    init_worker(evaluator_names, use_openai, model, version)
+    # init_worker(evaluator_names, use_openai, model, version) # No need to init here, passed to workers
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
         futures = [executor.submit(process_item, item, language, idx, evaluator_names, use_openai, model, version) for idx, (item, language) in enumerate(items_to_process)]
         
@@ -65,11 +65,19 @@ def main():
     parser.add_argument("--output_file", help="Path to the output JSONL file")
     parser.add_argument("--num_workers", type=int, default=4, help="Number of worker processes")
     parser.add_argument("--language", type=str, help="Language for the metric")
+    parser.add_argument("--model", type=str, default="granite4:3b", help="Model name for keypoint metrics")
+    parser.add_argument("--version", type=str, default="v1", help="Version for keypoint metrics (v0, v1, v2)")
+    parser.add_argument("--metric", action='append', help="List of metrics to use")
+    parser.add_argument("--use_openai", action='store_true', help="Use OpenAI client (or compatible) for keypoint metrics")
 
     args = parser.parse_args()
-    evaluator_names = ["rouge-l", "words_precision", "words_recall", "sentences_precision", "sentences_recall", "keypoint_metrics"]
-    # evaluator_names = ["rouge-l", "words_precision", "words_recall", "sentences_precision", "sentences_recall"]
-    process_jsonl(args.input_file, args.output_file, evaluator_names, args.num_workers, True, args.language, "granite4:3b", "v1")
+    
+    if args.metric:
+        evaluator_names = args.metric
+    else:
+        evaluator_names = ["rouge-l", "words_precision", "words_recall", "sentences_precision", "sentences_recall", "keypoint_metrics"]
+    
+    process_jsonl(args.input_file, args.output_file, evaluator_names, args.num_workers, args.use_openai, args.language, args.model, args.version)
 
 if __name__ == "__main__":
     main()
