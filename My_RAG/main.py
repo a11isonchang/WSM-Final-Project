@@ -64,8 +64,11 @@ def main(query_path: str, docs_path: str, language: str, output_path: str) -> No
         
         print(f"Chunk Size (EN): {chunk_size_en}, Overlap (EN): {chunk_overlap_en}")
         print(f"Chunk Size (ZH): {chunk_size_zh}, Overlap (ZH): {chunk_overlap_zh}")
+        # No need for ollama_config in chunking since SemanticChunker is removed
+        # The ollama_config here was for SemanticChunker's embedding model
+        # Now chunk_documents uses RecursiveCharacterTextSplitter solely.
         
-        print("✂️  Chunking documents with language-specific settings...")
+        print("✂️  Chunking documents with language-specific recursive settings...")
         try:
             chunks = chunk_documents(
                 docs_for_chunking,

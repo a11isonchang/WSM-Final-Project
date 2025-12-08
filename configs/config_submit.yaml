@@ -3,8 +3,8 @@ ollama:
   model: "granite4:3b"
 
 retrieval:
-  chunk_size_en: 384
-  chunk_overlap_en: 64
+  chunk_size_en: 1000
+  chunk_overlap_en: 200
   chunk_size_zh: 384
   chunk_overlap_zh: 64
   top_k: 8

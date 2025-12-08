@@ -2,14 +2,15 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from typing import List, Dict, Any
 
 def chunk_documents(docs: List[Dict[str, Any]], language: str, 
-                    chunk_size_en: int = 600, chunk_overlap_en: int = 100,
+                    chunk_size_en: int = 1000, chunk_overlap_en: int = 200,
                     chunk_size_zh: int = 384, chunk_overlap_zh: int = 64) -> List[Dict[str, Any]]:
-    # Define separators for mixed language support
+    
+    chunks = []
+    
+    # --- Language-Specific Recursive Character Splitters ---
     SEPARATORS_EN = ["\n\n", "\n", ".", "?", "!", " ", ""]
     SEPARATORS_ZH = ["\n\n", "\n", "。", "！", "？", "；", "：", "，", "、", " "]
 
-    # Pre-initialize splitters
-    # English Splitter
     splitter_en = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size_en,
         chunk_overlap=chunk_overlap_en,
@@ -18,7 +19,6 @@ def chunk_documents(docs: List[Dict[str, Any]], language: str,
         strip_whitespace=True
     )
     
-    # Chinese Splitter
     splitter_zh = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size_zh,
         chunk_overlap=chunk_overlap_zh,
@@ -26,9 +26,7 @@ def chunk_documents(docs: List[Dict[str, Any]], language: str,
         keep_separator="end",
         strip_whitespace=True
     )
-    
-    chunks = []
-    
+
     for doc_index, doc in enumerate(docs):
         if 'content' in doc and isinstance(doc['content'], str) and 'language' in doc:
             text = doc['content']
@@ -44,14 +42,9 @@ def chunk_documents(docs: List[Dict[str, Any]], language: str,
                 doc_chunks = splitter.split_text(text)
                 for i, chunk_text in enumerate(doc_chunks):
                     chunk_metadata = doc.copy()
-                    chunk_metadata.pop('content', None) # Remove 'content' to avoid redundancy in metadata
+                    chunk_metadata.pop('content', None)
                     chunk_metadata['chunk_index'] = i
-                    chunk_metadata['doc_idx'] = doc_index # Add doc_idx for Parent Document Retrieval
-                    
-                    chunk = {
-                        'page_content': chunk_text,
-                        'metadata': chunk_metadata
-                    }
-                    chunks.append(chunk)
+                    chunk_metadata['doc_idx'] = doc_index
+                    chunks.append({'page_content': chunk_text, 'metadata': chunk_metadata})
                     
     return chunks
