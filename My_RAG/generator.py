@@ -69,7 +69,7 @@ def generate_answer(query, context_chunks, language="en"):
     response = client.generate(
         model=ollama_config["model"],
         prompt=prompt,
-        options={"temperature": 0.2}  # improves factual stability
+        options={"temperature": 0.1}  # improves factual stability
     )
 
     return response["response"].strip()
