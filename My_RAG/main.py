@@ -40,8 +40,9 @@ def main(query_path, docs_path, language, output_path):
     for query in tqdm(queries, desc="Processing Queries"):
         # 4. Retrieve relevant chunks
         query_text = query['query']['content']
+        query_id = query['query'].get('query_id')
         # print(f"\nRetrieving chunks for query: '{query_text}'")
-        retrieved_chunks, retrieval_debug = retriever.retrieve(query_text, top_k=top_k)
+        retrieved_chunks, retrieval_debug = retriever.retrieve(query_text, top_k=top_k, query_id=query_id)
         if debug_retrieval:
             print(f"\n[Retrieval Debug] Query ID {query['query']['query_id']}: {query_text}")
             print(f"  Language: {retrieval_debug['language']} | top_k: {retrieval_debug['top_k']} | "
