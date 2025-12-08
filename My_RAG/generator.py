@@ -17,7 +17,7 @@ def _create_prompt_en(query: str, context: str) -> str:
 1. Base your answer ONLY on the Retrieved Context below
 2. Do NOT use external knowledge, assumptions, or inferences
 3. Do NOT make comparisons unless ALL necessary values are explicitly stated
-4. If the context does NOT contain the answer, reply: "Insufficient information in the retrieved documents."
+4. If the context does NOT contain the answer, reply: "Unable to answer"
 5. Synthesize information across passages when they complement each other
 6. If passages conflict, acknowledge the conflict briefly
 7. Be concise, factual, and comprehensive in covering the key points requested.
