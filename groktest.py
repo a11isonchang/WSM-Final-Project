@@ -8,7 +8,7 @@ INPUT_FILE = './dragonball_dataset/queries_show/test_queries_zh.jsonl'
 OUTPUT_FILE = './database/database_test.jsonl'
 
 # 填入你的 OpenRouter API Key
-OPENROUTER_API_KEY = "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" 
+OPENROUTER_API_KEY = "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" 
 
 # 在這裡填入你想用的 OpenRouter 模型名稱
 # 例如 xAI 的 Grok (假設是 grok-2 或其他): "x-ai/grok-2-1212"
@@ -77,7 +77,7 @@ def process_dataset():
     print(f"🚀 使用模型 [{MODEL_NAME}] 透過 OpenRouter 開始處理...")
 
     with open(INPUT_FILE, 'r', encoding='utf-8') as f_in, \
-         open(OUTPUT_FILE, 'w', encoding='utf-8') as f_out:
+         open(OUTPUT_FILE, 'a', encoding='utf-8') as f_out:
         
         for line in tqdm(f_in, total=total_lines):
             try:

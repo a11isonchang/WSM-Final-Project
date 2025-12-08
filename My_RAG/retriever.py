@@ -55,6 +55,7 @@ class BM25Retriever:
         self.language = language
         self.corpus = [chunk.get("page_content", "") for chunk in chunks]
         self.predefined_keywords = {}
+        self.unsolvable_queries = set()
         if keyword_file:
             self._load_predefined_keywords(keyword_file)
 
@@ -101,6 +102,14 @@ class BM25Retriever:
                         content = data.get("content", "").strip()
                         qid = data.get("query_id")
                         keywords = data.get("keywords", [])
+                        unsolve = data.get("unsolve", 0)
+
+                        if unsolve == 1:
+                            if qid is not None:
+                                self.unsolvable_queries.add(str(qid))
+                            if content:
+                                self.unsolvable_queries.add(content)
+
                         if keywords:
                             kw_set = set(keywords)
                             if content:
@@ -184,6 +193,17 @@ class BM25Retriever:
         return sum(1 for kw in keywords if kw and kw in haystack)
 
     def retrieve(self, query, top_k=5, query_id=None):
+        if (query_id is not None and str(query_id) in self.unsolvable_queries) or \
+           (query.strip() in self.unsolvable_queries):
+            return [], {
+                "language": self.language,
+                "top_k": top_k,
+                "candidate_count": 0,
+                "keyword_info": None,
+                "results": [],
+                "unsolvable": True
+            }
+
         if not self.chunks:
             return [], {
                 "language": self.language,
