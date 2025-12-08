@@ -237,26 +237,34 @@ class BM25Retriever:
 
         keyword_summary = None
         if self.keyword_boost > 0:
-            predefined = None
-            if query_id is not None:
-                predefined = self.predefined_keywords.get(str(query_id))
-            if not predefined:
-                predefined = self.predefined_keywords.get(query.strip())
+            predefined_source = "dynamic_simple" # Default if nothing else matches
+            keywords_to_use = set()
 
-            if predefined:
-                keywords = predefined
+            # Attempt to retrieve keywords by query_id first
+            if query_id is not None and str(query_id) in self.predefined_keywords:
+                keywords_to_use = self.predefined_keywords[str(query_id)]
+                predefined_source = "query_id"
+            # If not found by query_id, try by query_text
+            elif query.strip() in self.predefined_keywords:
+                keywords_to_use = self.predefined_keywords[query.strip()]
+                predefined_source = "query_text"
+            # If no predefined keywords found, perform dynamic extraction
             elif self.keyword_extraction_method == "semantic" and self.embedding_model:
-                keywords = self._extract_keywords_semantic(query)
-            else:
-                keywords = self._extract_keywords(tokenized_query)
+                keywords_to_use = self._extract_keywords_semantic(query)
+                predefined_source = "dynamic_semantic"
+            else: # Fallback to simple dynamic extraction
+                keywords_to_use = self._extract_keywords(tokenized_query)
+                predefined_source = "dynamic_simple"
 
             keyword_summary = {
-                "keywords": sorted(keywords),
+                "keywords": sorted(list(keywords_to_use)),
                 "boost": self.keyword_boost,
+                "predefined_source": predefined_source,
+                "query_id_provided": query_id is not None,
             }
             top_indices = sorted(
                 top_indices,
-                key=lambda idx: scores[idx] + self.keyword_boost * self._keyword_overlap(self.chunks[idx], keywords),
+                key=lambda idx: scores[idx] + self.keyword_boost * self._keyword_overlap(self.chunks[idx], keywords_to_use),
                 reverse=True,
             )
 
