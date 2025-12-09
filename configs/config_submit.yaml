@@ -19,6 +19,9 @@ retrieval:
   candidate_multiplier: 3.0
   keyword_boost: 0.15
   min_keyword_characters: 3
+  dense_weight: 0.5
+  en_stop_words_path: "My_RAG/stopwords_learned_en.txt"
+  zh_stop_words_path: "My_RAG/stopwords_learned_zh.txt"
   
   # Embedding Model Settings
   embedding_provider: "ollama"
