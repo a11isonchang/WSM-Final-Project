@@ -1,5 +1,5 @@
 ollama:
-  host: "http://gateway:11434"
+  host: "http://ollama-gateway:11434"
   model: "granite4:3b"
 
 retrieval:
