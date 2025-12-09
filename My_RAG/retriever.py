@@ -10,7 +10,7 @@ from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
 from sentence_transformers import SentenceTransformer
 from pathlib import Path
 from functools import lru_cache
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from ollama import Client
 
 
@@ -52,6 +52,8 @@ class BM25Retriever:
         embedding_provider: str = "local",
         ollama_host: str = "http://localhost:11434",
         keyword_file: str = None,
+        kg_retriever=None,
+        kg_boost: float = 0.0,
         dense_weight: float = 0.5, # Weight for dense retrieval score (0.0 to 1.0)
     ):
         self.chunks = chunks
@@ -61,6 +63,10 @@ class BM25Retriever:
         self.unsolvable_queries = set()
         if keyword_file:
             self._load_predefined_keywords(keyword_file)
+        
+        # 知识图谱检索器
+        self.kg_retriever = kg_retriever
+        self.kg_boost = max(0.0, kg_boost)
 
         self.min_keyword_characters = max(1, int(min_keyword_characters))
         self.candidate_multiplier = max(1.0, candidate_multiplier)
@@ -109,16 +115,38 @@ class BM25Retriever:
                             # Reconstruct all vectors: 0 to ntotal
                             # This might be memory intensive but fast for scoring
                             self.chunk_embeddings = self.faiss_index.reconstruct_n(0, ntotal)
-                            print(f"Loaded {ntotal} embeddings from FAISS index.")
+                            
+                            # Verify that the embedding dimension matches the current model
+                            test_emb = self._compute_embeddings(["test"])
+                            if test_emb and len(test_emb) > 0:
+                                test_array = np.array(test_emb)
+                                if test_array.ndim == 1:
+                                    expected_dim = test_array.shape[0]
+                                else:
+                                    expected_dim = test_array.shape[-1]
+                                actual_dim = self.chunk_embeddings.shape[1]
+                                if expected_dim != actual_dim:
+                                    print(f"Warning: Embedding dimension mismatch. Index has {actual_dim} dims, but current model produces {expected_dim} dims. Re-computing.")
+                                    self.faiss_index = None
+                                    self.chunk_embeddings = None
+                                else:
+                                    print(f"Loaded {ntotal} embeddings from FAISS index (dim={actual_dim}).")
+                            else:
+                                print(f"Warning: Could not verify embedding dimension. Re-computing.")
+                                self.faiss_index = None
+                                self.chunk_embeddings = None
                         else:
                             print(f"Warning: Index size ({ntotal}) does not match corpus size ({len(self.corpus)}). Re-computing.")
                             self.faiss_index = None
+                            self.chunk_embeddings = None
                     else:
                          print("Loaded index is not IndexFlat, cannot reconstruct easily. Re-computing.")
                          self.faiss_index = None
+                         self.chunk_embeddings = None
                 except Exception as e:
                     print(f"Error loading FAISS index: {e}. Re-computing.")
                     self.faiss_index = None
+                    self.chunk_embeddings = None
 
             if self.faiss_index is None:
                 print("Computing chunk embeddings for dense retrieval...")
@@ -286,6 +314,34 @@ class BM25Retriever:
         text = chunk["page_content"]
         haystack = text if self.language == "zh" else text.lower()
         return sum(1 for kw in keywords if kw and kw in haystack)
+    
+    def _get_kg_boost_scores(self, query: str) -> Dict[int, float]:
+        """
+        使用知识图谱检索器获取doc_id的boost分数
+        
+        Returns:
+            Dict[doc_id, boost_score]
+        """
+        if not self.kg_retriever or self.kg_boost <= 0:
+            return {}
+        
+        try:
+            # 获取相关的doc_ids
+            related_doc_ids = self.kg_retriever.retrieve_doc_ids(query, top_k=20)
+            
+            # 构建doc_id到boost分数的映射
+            # 第一个doc_id得分最高，后续递减
+            boost_scores = {}
+            for rank, doc_id in enumerate(related_doc_ids):
+                # 排名越靠前，boost越高（使用指数衰减）
+                boost = self.kg_boost * (0.8 ** rank)
+                boost_scores[doc_id] = boost
+            
+            return boost_scores
+        except Exception as e:
+            # 如果KG检索失败，不影响正常检索
+            print(f"Warning: KG retrieval failed: {e}")
+            return {}
 
     def retrieve(self, query, top_k=5, query_id=None):
         is_unsolvable = False
@@ -309,6 +365,17 @@ class BM25Retriever:
             bm25_scores = np.zeros(len(self.chunks))
         else:
             bm25_scores = np.array(self.bm25.get_scores(tokenized_query))
+
+        # Apply KG boost to BM25 scores before hybridization
+        bm25_scores = self.bm25.get_scores(tokenized_query)
+        
+        # 应用知识图谱boost
+        kg_boost_scores = self._get_kg_boost_scores(query)
+        if kg_boost_scores:
+            for idx, chunk in enumerate(self.chunks):
+                doc_id = chunk.get("metadata", {}).get("doc_id")
+                if doc_id is not None and doc_id in kg_boost_scores:
+                    bm25_scores[idx] += kg_boost_scores[doc_id]
 
         # 2. Dense Retrieval (Cosine Similarity)
         dense_scores = np.zeros(len(self.chunks))
@@ -418,11 +485,21 @@ class BM25Retriever:
         # 7. Final Selection
         selected = [self.chunks[idx] for idx in top_indices[:top_k]]
 
+        # 获取KG信息用于调试
+        kg_info = None
+        if self.kg_retriever and self.kg_boost > 0:
+            try:
+                kg_info = self.kg_retriever.get_entity_info(query)
+            except Exception:
+                pass
+        
         retrieval_debug = {
             "language": self.language,
             "top_k": top_k,
             "candidate_count": candidate_count,
             "keyword_info": keyword_summary,
+            "kg_info": kg_info,
+            "kg_boost": self.kg_boost if self.kg_retriever else 0.0,
             "results": [
                 {
                     "metadata": selected_chunk.get("metadata", {}),
@@ -734,6 +811,20 @@ def create_retriever(chunks, language, config=None):
         raise ValueError(f"Unsupported retriever type '{retriever_type}'.")
 
     bm25_cfg = config.get("bm25", {})
+    
+    # 初始化知识图谱检索器（如果启用）
+    kg_retriever = None
+    kg_boost = config.get("kg_boost", 0.0)
+    if kg_boost > 0:
+        try:
+            from kg_retriever import create_kg_retriever
+            kg_path = config.get("kg_path", "My_RAG/kg_output.json")
+            kg_retriever = create_kg_retriever(kg_path, language)
+            print(f"KG retriever initialized with boost={kg_boost}")
+        except Exception as e:
+            print(f"Warning: Failed to initialize KG retriever: {e}")
+            kg_boost = 0.0
+    
     return BM25Retriever(
         chunks,
         language,
@@ -747,4 +838,6 @@ def create_retriever(chunks, language, config=None):
         embedding_provider=config.get("embedding_provider", "local"),
         ollama_host=config.get("ollama_host", "http://ollama-gateway:11434"),
         keyword_file=config.get("keyword_file", "database/database.jsonl"),
+        kg_retriever=kg_retriever,
+        kg_boost=kg_boost,
     )

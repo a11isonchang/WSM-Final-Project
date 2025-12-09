@@ -77,6 +77,20 @@ def main(query_path, docs_path, language, output_path):
                     f"  Keywords: {retrieval_debug['keyword_info']['keywords']} "
                     f"(boost={retrieval_debug['keyword_info']['boost']})"
                 )
+            
+            # 显示知识图谱检索信息
+            if retrieval_debug.get("kg_boost", 0) > 0:
+                kg_info = retrieval_debug.get("kg_info")
+                if kg_info:
+                    entities = kg_info.get("entities_found", [])
+                    doc_ids = kg_info.get("related_doc_ids", [])
+                    print(
+                        f"  KG: Found {len(entities)} entities, "
+                        f"{len(doc_ids)} related docs (boost={retrieval_debug['kg_boost']})"
+                    )
+                    if entities:
+                        entity_names = [e.get("name", "") for e in entities[:3]]
+                        print(f"    Entities: {', '.join(entity_names)}")
 
             for idx, result in enumerate(retrieval_debug["results"], start=1):
                 meta = result.get("metadata", {})
