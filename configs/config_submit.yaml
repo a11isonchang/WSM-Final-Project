@@ -15,10 +15,15 @@ retrieval:
       chunk_overlap: 20
 
   # ===== Retrieval 設定 =====
-  top_k: 4
+  top_k: 10
   candidate_multiplier: 3.0
   keyword_boost: 0.15
   min_keyword_characters: 3
+  
+  # Embedding Model Settings
+  embedding_provider: "ollama"
+  embedding_model_path: "qwen3-embedding:0.6b"
+  ollama_host: "http://ollama-gateway:11434"
 
   bm25:
     k1: 1.5

@@ -85,11 +85,13 @@ def main(query_path, docs_path, language, output_path):
                 print(f"    #{idx} score={score:.4f} meta={meta} preview={preview}")
 
         # 5. Generate Answer
-        answer = generate_answer(query_text, retrieved_chunks, language)
+        # Use top 3 chunks for generation to provide better context
+        answer = generate_answer(query_text, retrieved_chunks[:3], language)
 
         query["prediction"]["content"] = answer
+        # Save top 3 chunks as references for evaluation
         query["prediction"]["references"] = (
-            [retrieved_chunks[0]["page_content"]] if retrieved_chunks else []
+            [chunk["page_content"] for chunk in retrieved_chunks[:3]] if retrieved_chunks else []
         )
 
     save_jsonl(output_path, queries)
