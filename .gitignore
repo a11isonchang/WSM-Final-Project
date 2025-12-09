@@ -26,3 +26,4 @@ logs/
 # Ollama artifacts
 *.ollama
 AGENTS.md
+groktest.py

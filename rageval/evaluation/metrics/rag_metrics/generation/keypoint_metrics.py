@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import List
-from openai import OpenAI
+#from openai import OpenAI
+from groq import Groq
 from typing import List, Dict
 import json
 import re
@@ -520,12 +521,9 @@ Key Point Evaluation:
 class KEYPOINT_METRICS:
     name: str = "keypoint_metrics"
 
-    def __init__(self, use_openai = True, model='granite4:3b', version='v1'):
+    def __init__(self, use_openai = True, model='openai/gpt-oss-20b', version='v1'):
         # 初始化任何必要的属性
-        self.client = OpenAI(
-            api_key="ollama",
-            base_url="http://localhost:11434/v1"
-        )
+        self.client = Groq()
         self.use_openai = use_openai
         self.model = model
         self.version = version
@@ -646,21 +644,22 @@ class KEYPOINT_METRICS:
         """
         prompt = self._create_prompt(question, prediction, key_point, language)
         print(prompt)
-        if self.use_openai:
-            messages = [{"role": "user", "content": prompt}]
-            #print("messages:", messages)
-            response = self.client.chat.completions.create(
-                messages = messages,
-                model = self.model,
-                temperature = 0.0,
-                top_p = 0.9,
-                n = 1,
-                stream = False,
-                frequency_penalty = 0.8,
-                presence_penalty = 0.9,
-                logit_bias = {}
-            ).model_dump()
-            response_text = response['choices'][0]['message']['content']
+        
+        messages = [{"role": "user", "content": prompt}]
+        #print("messages:", messages)
+        response = self.client.chat.completions.create(
+            messages = messages,
+            model = self.model,
+            temperature = 0.0,
+            top_p = 0.9,
+            n = 1,
+            stream = False,
+            frequency_penalty = 0.8,
+            presence_penalty = 0.9,
+            logit_bias = {}
+        )
+        response_text = response.choices[0].message.content
+
         return response_text
     
     def _handle_key_point_v1(self, question, prediction, key_points, language):
@@ -668,48 +667,44 @@ class KEYPOINT_METRICS:
         Generate prompt for multiple key points and call the model.
         """
         prompt = self._create_prompt_v1(question, prediction, key_points, language)
-        if self.use_openai:
-            messages = [{"role": "user", "content": prompt}]
-            response = self.client.chat.completions.create(
-                messages=messages,
-                model=self.model,
-                temperature=0.0,
-                top_p=0.9,
-                n=1,
-                stream=False,
-                frequency_penalty=0.8,
-                presence_penalty=0.9,
-                logit_bias={}
-            ).model_dump()
-            response_text = response['choices'][0]['message']['content']
-            return response_text
-        else:
-            # Implement alternative handling if not using OpenAI
-            raise NotImplementedError("Only OpenAI API is supported currently.")
+        
+        messages = [{"role": "user", "content": prompt}]
+        response = self.client.chat.completions.create(
+            messages=messages,
+            model=self.model,
+            temperature=0.0,
+            top_p=0.9,
+            n=1,
+            stream=False,
+            frequency_penalty=0.8,
+            presence_penalty=0.9,
+            logit_bias={}
+        )
+        response_text = response.choices[0].message.content
+
+        return response_text
 
     def _handle_key_point_v2(self, question, prediction, key_points, language):
         """
         Generate prompt for multiple key points and call the model for v2.
         """
         prompt = self._create_prompt_v2(question, prediction, key_points, language)
-        if self.use_openai:
-            messages = [{"role": "user", "content": prompt}]
-            response = self.client.chat.completions.create(
-                messages=messages,
-                model=self.model,
-                temperature=0.0,
-                top_p=0.9,
-                n=1,
-                stream=False,
-                frequency_penalty=0.8,
-                presence_penalty=0.9,
-                logit_bias={}
-            ).model_dump()
-            response_text = response['choices'][0]['message']['content']
-            return response_text
-        else:
-            # Implement alternative handling if not using OpenAI
-            raise NotImplementedError("Only OpenAI API is supported currently.")
+        
+        messages = [{"role": "user", "content": prompt}]
+        response = self.client.chat.completions.create(
+            messages=messages,
+            model=self.model,
+            temperature=0.0,
+            top_p=0.9,
+            n=1,
+            stream=False,
+            frequency_penalty=0.8,
+            presence_penalty=0.9,
+            logit_bias={}
+        ).model_dump()
+        response_text = response.choices[0].message.content
+
+        return response_text
 
 
     def _parse_key_points(self, key_points_str):

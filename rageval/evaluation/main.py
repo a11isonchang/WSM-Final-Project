@@ -5,7 +5,7 @@ from pathlib import Path
 from tqdm import tqdm
 from metrics import get_metric
 
-def init_worker(evaluator_names, use_openai=True, model='granite4:3b', version='v1'):
+def init_worker(evaluator_names, use_openai=True, model='openai/gpt-oss-20b', version='v1'):
     global evaluators
     evaluators = []
     for evaluator_name in evaluator_names:
@@ -17,7 +17,7 @@ def init_worker(evaluator_names, use_openai=True, model='granite4:3b', version='
     if not evaluators:
         raise ValueError("No correct evaluators are provided")
 
-def process_item(item, language="zh", idx=0, evaluator_names=None, use_openai=False, model='granite4:3b', version='v1'):
+def process_item(item, language="zh", idx=0, evaluator_names=None, use_openai=False, model='openai/gpt-oss-20b', version='v1'):
     ground_truth = item["ground_truth"]
     results = None 
     init_worker(evaluator_names, use_openai, model, version)
@@ -29,7 +29,7 @@ def process_item(item, language="zh", idx=0, evaluator_names=None, use_openai=Fa
             item.update(result)
     return idx, item
 
-def process_jsonl(input_file, output_file, evaluator_names, num_workers, use_openai=False, language="zh", model='granite4:3b', version='v1'):
+def process_jsonl(input_file, output_file, evaluator_names, num_workers, use_openai=False, language="zh", model='openai/gpt-oss-20b', version='v1'):
     input_path = Path(input_file)
     output_path = Path(output_file)
 
@@ -45,7 +45,7 @@ def process_jsonl(input_file, output_file, evaluator_names, num_workers, use_ope
     else:
         items_to_process = [(item, language) for item in items if item["query"]["query_id"] not in processed_ids]
 
-    init_worker(evaluator_names, use_openai, model, version)
+    # init_worker(evaluator_names, use_openai, model, version) # No need to init here, passed to workers
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
         futures = [executor.submit(process_item, item, language, idx, evaluator_names, use_openai, model, version) for idx, (item, language) in enumerate(items_to_process)]
         
@@ -65,11 +65,19 @@ def main():
     parser.add_argument("--output_file", help="Path to the output JSONL file")
     parser.add_argument("--num_workers", type=int, default=4, help="Number of worker processes")
     parser.add_argument("--language", type=str, help="Language for the metric")
+    parser.add_argument("--model", type=str, default="openai/gpt-oss-20b", help="Model name for keypoint metrics")
+    parser.add_argument("--version", type=str, default="v1", help="Version for keypoint metrics (v0, v1, v2)")
+    parser.add_argument("--metric", action='append', help="List of metrics to use")
+    parser.add_argument("--use_openai", action='store_true', help="Use OpenAI client (or compatible) for keypoint metrics")
 
     args = parser.parse_args()
-    evaluator_names = ["rouge-l", "words_precision", "words_recall", "sentences_precision", "sentences_recall", "keypoint_metrics"]
-    # evaluator_names = ["rouge-l", "words_precision", "words_recall", "sentences_precision", "sentences_recall"]
-    process_jsonl(args.input_file, args.output_file, evaluator_names, args.num_workers, True, args.language, "granite4:3b", "v1")
+    
+    if args.metric:
+        evaluator_names = args.metric
+    else:
+        evaluator_names = ["rouge-l", "words_precision", "words_recall", "sentences_precision", "sentences_recall", "keypoint_metrics"]
+    
+    process_jsonl(args.input_file, args.output_file, evaluator_names, args.num_workers, args.use_openai, args.language, args.model, args.version)
 
 if __name__ == "__main__":
     main()
