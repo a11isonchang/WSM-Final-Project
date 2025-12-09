@@ -61,12 +61,9 @@ def main(query_path, docs_path, language, output_path):
         query_text = query["query"]["content"]
         query_id = query["query"].get("query_id")
 
-        retrieved_chunks, retrieval_debug = retriever.retrieve(
-            query_text,
-            top_k=top_k,
-            query_id=query_id
-        )
-
+        # Retrieve relevant chunks
+        retrieved_chunks, retrieval_debug = retriever.retrieve(query_text, top_k=top_k, query_id=query_id)
+        
         if debug_retrieval:
             print(f"\n[Retrieval Debug] Query ID {query_id}: {query_text}")
             print(
@@ -102,11 +99,13 @@ def main(query_path, docs_path, language, output_path):
                 print(f"    #{idx} score={score:.4f} meta={meta} preview={preview}")
 
         # 5. Generate Answer
-        answer = generate_answer(query_text, retrieved_chunks, language)
+        # Use top 3 chunks for generation to provide better context
+        answer = generate_answer(query_text, retrieved_chunks[:3], language)
 
         query["prediction"]["content"] = answer
+        # Save top 3 chunks as references for evaluation
         query["prediction"]["references"] = (
-            [retrieved_chunks[0]["page_content"]] if retrieved_chunks else []
+            [chunk["page_content"] for chunk in retrieved_chunks[:3]] if retrieved_chunks else []
         )
 
     save_jsonl(output_path, queries)
