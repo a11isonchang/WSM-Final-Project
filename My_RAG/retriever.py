@@ -8,7 +8,7 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from pathlib import Path
 from functools import lru_cache
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from ollama import Client
 
 
@@ -50,6 +50,8 @@ class BM25Retriever:
         embedding_provider: str = "local",
         ollama_host: str = "http://localhost:11434",
         keyword_file: str = None,
+        kg_retriever=None,
+        kg_boost: float = 0.0,
     ):
         self.chunks = chunks
         self.language = language
@@ -58,6 +60,10 @@ class BM25Retriever:
         self.unsolvable_queries = set()
         if keyword_file:
             self._load_predefined_keywords(keyword_file)
+        
+        # 知识图谱检索器
+        self.kg_retriever = kg_retriever
+        self.kg_boost = max(0.0, kg_boost)
 
         self.min_keyword_characters = max(1, int(min_keyword_characters))
         self.candidate_multiplier = max(1.0, candidate_multiplier)
@@ -191,6 +197,34 @@ class BM25Retriever:
         text = chunk["page_content"]
         haystack = text if self.language == "zh" else text.lower()
         return sum(1 for kw in keywords if kw and kw in haystack)
+    
+    def _get_kg_boost_scores(self, query: str) -> Dict[int, float]:
+        """
+        使用知识图谱检索器获取doc_id的boost分数
+        
+        Returns:
+            Dict[doc_id, boost_score]
+        """
+        if not self.kg_retriever or self.kg_boost <= 0:
+            return {}
+        
+        try:
+            # 获取相关的doc_ids
+            related_doc_ids = self.kg_retriever.retrieve_doc_ids(query, top_k=20)
+            
+            # 构建doc_id到boost分数的映射
+            # 第一个doc_id得分最高，后续递减
+            boost_scores = {}
+            for rank, doc_id in enumerate(related_doc_ids):
+                # 排名越靠前，boost越高（使用指数衰减）
+                boost = self.kg_boost * (0.8 ** rank)
+                boost_scores[doc_id] = boost
+            
+            return boost_scores
+        except Exception as e:
+            # 如果KG检索失败，不影响正常检索
+            print(f"Warning: KG retrieval failed: {e}")
+            return {}
 
     def retrieve(self, query, top_k=5, query_id=None):
         if (query_id is not None and str(query_id) in self.unsolvable_queries) or \
@@ -231,6 +265,15 @@ class BM25Retriever:
             }
 
         scores = self.bm25.get_scores(tokenized_query)
+        
+        # 应用知识图谱boost
+        kg_boost_scores = self._get_kg_boost_scores(query)
+        if kg_boost_scores:
+            for idx, chunk in enumerate(self.chunks):
+                doc_id = chunk.get("metadata", {}).get("doc_id")
+                if doc_id is not None and doc_id in kg_boost_scores:
+                    scores[idx] += kg_boost_scores[doc_id]
+        
         candidate_count = max(top_k, int(round(top_k * self.candidate_multiplier)))
         candidate_count = min(candidate_count, len(self.chunks))
         top_indices = sorted(range(len(scores)), key=lambda idx: scores[idx], reverse=True)[:candidate_count]
@@ -276,11 +319,21 @@ class BM25Retriever:
 
         selected = [self.chunks[idx] for idx in top_indices[:top_k]]
 
+        # 获取KG信息用于调试
+        kg_info = None
+        if self.kg_retriever and self.kg_boost > 0:
+            try:
+                kg_info = self.kg_retriever.get_entity_info(query)
+            except Exception:
+                pass
+        
         retrieval_debug = {
             "language": self.language,
             "top_k": top_k,
             "candidate_count": candidate_count,
             "keyword_info": keyword_summary,
+            "kg_info": kg_info,
+            "kg_boost": self.kg_boost if self.kg_retriever else 0.0,
             "results": [
                 {
                     "metadata": selected_chunk.get("metadata", {}),
@@ -302,6 +355,20 @@ def create_retriever(chunks, language, config=None):
         raise ValueError(f"Unsupported retriever type '{retriever_type}'.")
 
     bm25_cfg = config.get("bm25", {})
+    
+    # 初始化知识图谱检索器（如果启用）
+    kg_retriever = None
+    kg_boost = config.get("kg_boost", 0.0)
+    if kg_boost > 0:
+        try:
+            from kg_retriever import create_kg_retriever
+            kg_path = config.get("kg_path", "My_RAG/kg_output.json")
+            kg_retriever = create_kg_retriever(kg_path, language)
+            print(f"KG retriever initialized with boost={kg_boost}")
+        except Exception as e:
+            print(f"Warning: Failed to initialize KG retriever: {e}")
+            kg_boost = 0.0
+    
     return BM25Retriever(
         chunks,
         language,
@@ -315,4 +382,6 @@ def create_retriever(chunks, language, config=None):
         embedding_provider=config.get("embedding_provider", "local"),
         ollama_host=config.get("ollama_host", "http://ollama-gateway:11434"),
         keyword_file=config.get("keyword_file", "database/database.jsonl"),
+        kg_retriever=kg_retriever,
+        kg_boost=kg_boost,
     )

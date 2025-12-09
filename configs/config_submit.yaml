@@ -20,6 +20,11 @@ retrieval:
   keyword_boost: 0.15
   min_keyword_characters: 3
 
+  # ===== Knowledge Graph Retrieval 設定 =====
+  kg_boost: 1.5  # 0 -> 關掉KG
+  kg_path: "My_RAG/kg_output.json"
+
+
   bm25:
     k1: 1.5
     b: 0.70
