@@ -249,11 +249,17 @@ class BM25Retriever:
                 keywords_to_use = self.predefined_keywords[query.strip()]
                 predefined_source = "query_text"
             # If no predefined keywords found, perform dynamic extraction
-            elif self.keyword_extraction_method == "semantic" and self.embedding_model:
-                keywords_to_use = self._extract_keywords_semantic(query)
-                predefined_source = "dynamic_semantic"
             else: # Fallback to simple dynamic extraction
-                keywords_to_use = self._extract_keywords(tokenized_query)
+                if self.language == "zh":
+                    keywords_to_use = self._extract_keywords(tokenized_query)
+                else:
+                    # Use unstemmed tokens for keyword matching in raw text
+                    raw_tokens = EN_TOKEN_PATTERN.findall(query.lower())
+                    keywords_to_use = {
+                        t for t in raw_tokens 
+                        if t not in ENGLISH_STOP_WORDS_SET 
+                        and len(t) >= self.min_keyword_characters
+                    }
                 predefined_source = "dynamic_simple"
 
             keyword_summary = {
@@ -308,5 +314,5 @@ def create_retriever(chunks, language, config=None):
         embedding_model_path=config.get("embedding_model_path", "My_RAG/models/all_minilm_l6"),
         embedding_provider=config.get("embedding_provider", "local"),
         ollama_host=config.get("ollama_host", "http://ollama-gateway:11434"),
-        keyword_file=config.get("keyword_file", "database/database_test.jsonl"),
+        keyword_file=config.get("keyword_file", "database/temp.jsonl"),
     )
