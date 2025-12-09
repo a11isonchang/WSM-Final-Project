@@ -2,6 +2,9 @@
 
 set -e
 
+# Add the current directory to PYTHONPATH to resolve module import issues
+export PYTHONPATH="$PYTHONPATH:$(pwd)"
+
 log() {
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     local message="$timestamp - $1"

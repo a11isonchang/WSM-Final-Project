@@ -22,6 +22,8 @@ retrieval:
   dense_weight: 0.5
   en_stop_words_path: "My_RAG/stopwords_learned_en.txt"
   zh_stop_words_path: "My_RAG/stopwords_learned_zh.txt"
+  reranker_model_path: null
+  rerank_top_n: null
   
   # Embedding Model Settings
   embedding_provider: "ollama"

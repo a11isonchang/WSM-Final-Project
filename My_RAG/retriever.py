@@ -10,8 +10,9 @@ from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
 from sentence_transformers import SentenceTransformer
 from pathlib import Path
 from functools import lru_cache
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from ollama import Client
+from My_RAG.reranker import Reranker
 
 
 EN_TOKEN_PATTERN = re.compile(r"[a-z0-9']+")
@@ -55,10 +56,15 @@ class BM25Retriever:
         dense_weight: float = 0.5, # Weight for dense retrieval score (0.0 to 1.0)
         en_stop_words_path: str = None,
         zh_stop_words_path: str = None,
+        reranker_model_path: str = None, # Path to Cross-Encoder model for reranking
+        rerank_top_n: int = None, # Number of top results to return after reranking
+        domain_centroids_path: Optional[str] = None, # Optional .npy centroids for domain filtering
+        debug: bool = False,
     ):
         self.chunks = chunks
         self.language = language
         self.corpus = [chunk.get("page_content", "") for chunk in chunks]
+        self.chunk_domains = [chunk.get("metadata", {}).get("domain") for chunk in chunks]
         self.predefined_keywords = {}
         self.unsolvable_queries = set()
         if keyword_file:
@@ -70,6 +76,7 @@ class BM25Retriever:
         self.keyword_extraction_method = keyword_extraction_method
         self.embedding_provider = embedding_provider
         self.dense_weight = dense_weight
+        self.debug = debug
         
         self.english_stop_words = set(ENGLISH_STOP_WORDS)
         if en_stop_words_path:
@@ -83,6 +90,13 @@ class BM25Retriever:
         self.ollama_client = None
         self.chunk_embeddings = None
         self.faiss_index = None
+        self.domain_centroids = self._load_domain_centroids(domain_centroids_path) if domain_centroids_path else None
+        
+        self.rerank_top_n = rerank_top_n
+        if reranker_model_path:
+            self.reranker = Reranker(reranker_model_path)
+        else:
+            self.reranker = None
 
         # Initialize Embedding Model (for Dense Retrieval and/or Semantic Keywords)
         if self.embedding_provider == "ollama":
@@ -307,6 +321,56 @@ class BM25Retriever:
         haystack = text if self.language == "zh" else text.lower()
         return sum(1 for kw in keywords if kw and kw in haystack)
 
+    def _load_domain_centroids(self, path: str) -> Optional[Dict[str, np.ndarray]]:
+        p = Path(path)
+        if not p.exists():
+            print(f"Domain centroid file not found at {p}. Skipping domain filtering.")
+            return None
+        try:
+            data = np.load(p, allow_pickle=True).item()
+            if not isinstance(data, dict):
+                print(f"Invalid centroid file format at {p}.")
+                return None
+            return {k: np.array(v, dtype=np.float32) for k, v in data.items()}
+        except Exception as e:
+            print(f"Error loading domain centroids from {p}: {e}")
+            return None
+
+    def _classify_domain(self, query: str) -> Optional[str]:
+        """Classify query to a domain using precomputed centroids."""
+        if not self.domain_centroids or not self.embedding_model:
+            return None
+
+        query_emb = self._compute_embeddings([query])
+        if not query_emb:
+            return None
+
+        vec = np.array(query_emb, dtype=np.float32)
+        if vec.ndim > 1:
+            vec = vec[0]
+        norm = np.linalg.norm(vec)
+        if norm > 1e-9:
+            vec = vec / norm
+        else:
+            return None
+
+        best_domain = None
+        best_score = -1.0
+        for domain, centroid in self.domain_centroids.items():
+            if centroid is None:
+                continue
+            c = np.array(centroid, dtype=np.float32)
+            if c.ndim > 1:
+                c = c.reshape(-1)
+            c_norm = np.linalg.norm(c)
+            if c_norm > 1e-9:
+                c = c / c_norm
+            score = float(np.dot(vec, c))
+            if score > best_score:
+                best_score = score
+                best_domain = domain
+        return best_domain
+
     def retrieve(self, query, top_k=5, query_id=None):
         is_unsolvable = False
         if (query_id is not None and str(query_id) in self.unsolvable_queries) or \
@@ -320,7 +384,8 @@ class BM25Retriever:
                 "candidate_count": 0,
                 "keyword_info": None,
                 "results": [],
-                "unsolvable": is_unsolvable
+                "unsolvable": is_unsolvable,
+                "reranked": False
             }
 
         # 1. Sparse Retrieval (BM25)
@@ -329,6 +394,17 @@ class BM25Retriever:
             bm25_scores = np.zeros(len(self.chunks))
         else:
             bm25_scores = np.array(self.bm25.get_scores(tokenized_query))
+
+        classified_domain = self._classify_domain(query)
+        if classified_domain:
+            domain_mask = np.array(
+                [1 if d == classified_domain else 0 for d in self.chunk_domains],
+                dtype=np.float32,
+            )
+            if self.debug:
+                print(f"[Domain Classifier] Predicted domain: {classified_domain}")
+        else:
+            domain_mask = np.ones(len(self.chunks), dtype=np.float32)
 
         # 2. Dense Retrieval (Cosine Similarity)
         dense_scores = np.zeros(len(self.chunks))
@@ -359,9 +435,13 @@ class BM25Retriever:
                     except Exception as e:
                         print(f"Error in dense retrieval scoring: {e}")
                         dense_scores = np.zeros(len(self.chunks))
-                else:
-                    # Query embedding is effectively zero, skip dense retrieval
-                    dense_scores = np.zeros(len(self.chunks))
+            else:
+                # Query embedding is effectively zero, skip dense retrieval
+                dense_scores = np.zeros(len(self.chunks))
+
+        # Apply domain mask so only the selected domain competes in ranking
+        bm25_scores = bm25_scores * domain_mask
+        dense_scores = dense_scores * domain_mask
 
         # 3. Score Normalization (Min-Max)
         def normalize(scores):
@@ -377,11 +457,18 @@ class BM25Retriever:
         hybrid_scores = (1 - self.dense_weight) * bm25_norm + self.dense_weight * dense_norm
 
         # 5. Candidate Selection (based on Hybrid Score)
-        candidate_count = max(top_k, int(round(top_k * self.candidate_multiplier)))
-        candidate_count = min(candidate_count, len(self.chunks))
+        # Determine the pool size for reranking. If reranker is active, we might need a larger pool.
+        # Otherwise, candidate_count is the actual top_k after boosting.
+        initial_candidate_count = max(top_k, int(round(top_k * self.candidate_multiplier)))
+        if self.reranker:
+            # If reranker is enabled, retrieve more candidates for reranking
+            rerank_pool_size = max(initial_candidate_count, int(round(top_k * self.candidate_multiplier * 5))) # take 5x more for reranker pool
+            candidate_count_for_selection = min(rerank_pool_size, len(self.chunks))
+        else:
+            candidate_count_for_selection = min(initial_candidate_count, len(self.chunks))
         
         # Get indices of top hybrid scores
-        top_indices = np.argsort(hybrid_scores)[::-1][:candidate_count]
+        top_indices = np.argsort(hybrid_scores)[::-1][:candidate_count_for_selection]
 
         # 6. Keyword Boosting
         keyword_summary = None
@@ -405,7 +492,7 @@ class BM25Retriever:
                     raw_tokens = EN_TOKEN_PATTERN.findall(query.lower())
                     keywords_to_use = {
                         t for t in raw_tokens 
-                        if t not in ENGLISH_STOP_WORDS_SET 
+                        if t not in self.english_stop_words 
                         and len(t) >= self.min_keyword_characters
                     }
                 if not keywords_to_use and predefined_source == "dynamic_simple":
@@ -433,26 +520,63 @@ class BM25Retriever:
             boosted_scores.sort(key=lambda x: x[1], reverse=True)
             top_indices = [x[0] for x in boosted_scores]
 
-        # 7. Final Selection
-        selected = [self.chunks[idx] for idx in top_indices[:top_k]]
+        # Get initial candidates based on hybrid + keyword scores
+        initial_candidates = [self.chunks[idx] for idx in top_indices]
 
-        retrieval_debug = {
-            "language": self.language,
-            "top_k": top_k,
-            "candidate_count": candidate_count,
-            "keyword_info": keyword_summary,
-            "results": [
-                {
+        final_selected_chunks = []
+        is_reranked = False
+        if self.reranker and initial_candidates:
+            # Rerank the initial candidates
+            reranked_results = self.reranker.rerank(query, initial_candidates, top_n=self.rerank_top_n or top_k)
+            final_selected_chunks = reranked_results
+            is_reranked = True
+            
+            # Update scores in retrieval_debug to reflect reranker scores
+            retrieval_debug_results = []
+            for chunk in final_selected_chunks:
+                retrieval_debug_results.append({
+                    "metadata": chunk.get("metadata", {}),
+                    "preview": chunk.get("page_content", "")[:200],
+                    "score": float(chunk.get("rerank_score", 0.0)), # Use rerank score
+                })
+            retrieval_debug = {
+                "language": self.language,
+                "top_k": top_k, # This is the requested top_k, not rerank_top_n
+                "candidate_count": candidate_count_for_selection,
+                "keyword_info": keyword_summary,
+                "results": retrieval_debug_results,
+                "classified_domain": classified_domain,
+                "unsolvable": is_unsolvable,
+                "reranked": is_reranked
+            }
+            
+        else:
+            final_selected_chunks = initial_candidates[:top_k] # Use original top_k
+            retrieval_debug_results = []
+            # Need to re-map indices from top_indices (which might be larger than final top_k)
+            # to get the original hybrid scores for the final_selected_chunks
+            selected_indices_for_debug = top_indices[:top_k]
+
+            for idx, chunk_idx in enumerate(selected_indices_for_debug):
+                selected_chunk = self.chunks[chunk_idx]
+                retrieval_debug_results.append({
                     "metadata": selected_chunk.get("metadata", {}),
                     "preview": selected_chunk.get("page_content", "")[:200],
-                    "score": float(hybrid_scores[top_indices[idx]]), # Show hybrid score (pre-boost) or boosted? Let's show hybrid for clarity of base relevance
-                }
-                for idx, selected_chunk in enumerate(selected)
-            ],
-            "unsolvable": is_unsolvable
-        }
+                    "score": float(hybrid_scores[chunk_idx]), # Show hybrid score (pre-boost)
+                })
+            
+            retrieval_debug = {
+                "language": self.language,
+                "top_k": top_k,
+                "candidate_count": candidate_count_for_selection,
+                "keyword_info": keyword_summary,
+                "results": retrieval_debug_results,
+                "classified_domain": classified_domain,
+                "unsolvable": is_unsolvable,
+                "reranked": is_reranked
+            }
 
-        return selected, retrieval_debug
+        return final_selected_chunks, retrieval_debug
 
 
 def create_retriever(chunks, language, config=None):
@@ -479,4 +603,8 @@ def create_retriever(chunks, language, config=None):
         dense_weight=config.get("dense_weight", 0.5),
         en_stop_words_path=config.get("en_stop_words_path", "My_RAG/stopwords_learned_en.txt"),
         zh_stop_words_path=config.get("zh_stop_words_path", "My_RAG/stopwords_learned_zh.txt"),
+        reranker_model_path=config.get("reranker_model_path", None),
+        rerank_top_n=config.get("rerank_top_n", None),
+        domain_centroids_path=config.get("domain_centroids_path", "database/domain_centroids.npy"),
+        debug=config.get("debug", False),
     )
