@@ -314,5 +314,5 @@ def create_retriever(chunks, language, config=None):
         embedding_model_path=config.get("embedding_model_path", "My_RAG/models/all_minilm_l6"),
         embedding_provider=config.get("embedding_provider", "local"),
         ollama_host=config.get("ollama_host", "http://ollama-gateway:11434"),
-        keyword_file=config.get("keyword_file", "database/temp.jsonl"),
+        keyword_file=config.get("keyword_file", "database/database.jsonl"),
     )
