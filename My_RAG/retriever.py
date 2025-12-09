@@ -115,16 +115,38 @@ class BM25Retriever:
                             # Reconstruct all vectors: 0 to ntotal
                             # This might be memory intensive but fast for scoring
                             self.chunk_embeddings = self.faiss_index.reconstruct_n(0, ntotal)
-                            print(f"Loaded {ntotal} embeddings from FAISS index.")
+                            
+                            # Verify that the embedding dimension matches the current model
+                            test_emb = self._compute_embeddings(["test"])
+                            if test_emb and len(test_emb) > 0:
+                                test_array = np.array(test_emb)
+                                if test_array.ndim == 1:
+                                    expected_dim = test_array.shape[0]
+                                else:
+                                    expected_dim = test_array.shape[-1]
+                                actual_dim = self.chunk_embeddings.shape[1]
+                                if expected_dim != actual_dim:
+                                    print(f"Warning: Embedding dimension mismatch. Index has {actual_dim} dims, but current model produces {expected_dim} dims. Re-computing.")
+                                    self.faiss_index = None
+                                    self.chunk_embeddings = None
+                                else:
+                                    print(f"Loaded {ntotal} embeddings from FAISS index (dim={actual_dim}).")
+                            else:
+                                print(f"Warning: Could not verify embedding dimension. Re-computing.")
+                                self.faiss_index = None
+                                self.chunk_embeddings = None
                         else:
                             print(f"Warning: Index size ({ntotal}) does not match corpus size ({len(self.corpus)}). Re-computing.")
                             self.faiss_index = None
+                            self.chunk_embeddings = None
                     else:
                          print("Loaded index is not IndexFlat, cannot reconstruct easily. Re-computing.")
                          self.faiss_index = None
+                         self.chunk_embeddings = None
                 except Exception as e:
                     print(f"Error loading FAISS index: {e}. Re-computing.")
                     self.faiss_index = None
+                    self.chunk_embeddings = None
 
             if self.faiss_index is None:
                 print("Computing chunk embeddings for dense retrieval...")
