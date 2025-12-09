@@ -61,12 +61,9 @@ def main(query_path, docs_path, language, output_path):
         query_text = query["query"]["content"]
         query_id = query["query"].get("query_id")
 
-        retrieved_chunks, retrieval_debug = retriever.retrieve(
-            query_text,
-            top_k=top_k,
-            query_id=query_id
-        )
-
+        # Retrieve relevant chunks
+        retrieved_chunks, retrieval_debug = retriever.retrieve(query_text, top_k=top_k, query_id=query_id)
+        
         if debug_retrieval:
             print(f"\n[Retrieval Debug] Query ID {query_id}: {query_text}")
             print(

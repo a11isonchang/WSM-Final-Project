@@ -193,16 +193,10 @@ class BM25Retriever:
         return sum(1 for kw in keywords if kw and kw in haystack)
 
     def retrieve(self, query, top_k=5, query_id=None):
+        is_unsolvable = False
         if (query_id is not None and str(query_id) in self.unsolvable_queries) or \
            (query.strip() in self.unsolvable_queries):
-            return [], {
-                "language": self.language,
-                "top_k": top_k,
-                "candidate_count": 0,
-                "keyword_info": None,
-                "results": [],
-                "unsolvable": True
-            }
+            is_unsolvable = True
 
         if not self.chunks:
             return [], {
@@ -211,6 +205,7 @@ class BM25Retriever:
                 "candidate_count": 0,
                 "keyword_info": None,
                 "results": [],
+                "unsolvable": is_unsolvable
             }
         tokenized_query = self._tokenize(query)
         if not tokenized_query:
@@ -228,6 +223,7 @@ class BM25Retriever:
                     }
                     for chunk in subset
                 ],
+                "unsolvable": is_unsolvable
             }
 
         scores = self.bm25.get_scores(tokenized_query)
@@ -289,6 +285,7 @@ class BM25Retriever:
                 }
                 for idx, selected_chunk in enumerate(selected)
             ],
+            "unsolvable": is_unsolvable
         }
 
         return selected, retrieval_debug
