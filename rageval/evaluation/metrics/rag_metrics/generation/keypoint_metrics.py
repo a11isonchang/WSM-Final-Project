@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import List
-from openai import OpenAI
+#from openai import OpenAI
+from groq import Groq
 from typing import List, Dict
 import json
 import re
@@ -520,12 +521,9 @@ Key Point Evaluation:
 class KEYPOINT_METRICS:
     name: str = "keypoint_metrics"
 
-    def __init__(self, use_openai = True, model='granite4:3b', version='v1'):
+    def __init__(self, use_openai = True, model='openai/gpt-oss-20b', version='v1'):
         # 初始化任何必要的属性
-        self.client = OpenAI(
-            api_key="ollama",
-            base_url="http://localhost:11434/v1"
-        )
+        self.client = Groq()
         self.use_openai = use_openai
         self.model = model
         self.version = version
@@ -659,8 +657,9 @@ class KEYPOINT_METRICS:
             frequency_penalty = 0.8,
             presence_penalty = 0.9,
             logit_bias = {}
-        ).model_dump()
-        response_text = response['choices'][0]['message']['content']
+        )
+        response_text = response.choices[0].message.content
+
         return response_text
     
     def _handle_key_point_v1(self, question, prediction, key_points, language):
@@ -680,8 +679,9 @@ class KEYPOINT_METRICS:
             frequency_penalty=0.8,
             presence_penalty=0.9,
             logit_bias={}
-        ).model_dump()
-        response_text = response['choices'][0]['message']['content']
+        )
+        response_text = response.choices[0].message.content
+
         return response_text
 
     def _handle_key_point_v2(self, question, prediction, key_points, language):
@@ -702,7 +702,8 @@ class KEYPOINT_METRICS:
             presence_penalty=0.9,
             logit_bias={}
         ).model_dump()
-        response_text = response['choices'][0]['message']['content']
+        response_text = response.choices[0].message.content
+
         return response_text
 
 
