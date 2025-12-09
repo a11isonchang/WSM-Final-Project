@@ -2,10 +2,12 @@ from rank_bm25 import BM25Okapi
 import jieba
 import json
 import re
+import numpy as np
+import faiss
+import os
 from nltk.stem import PorterStemmer
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
 from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
 from pathlib import Path
 from functools import lru_cache
 from typing import List, Dict, Any
@@ -33,7 +35,7 @@ def load_chinese_stop_words() -> set:
 
 
 class BM25Retriever:
-    """Lexical retriever with optional keyword-based re-ranking."""
+    """Hybrid retriever (BM25 + Dense) with optional keyword-based re-ranking."""
 
     def __init__(
         self,
@@ -50,6 +52,7 @@ class BM25Retriever:
         embedding_provider: str = "local",
         ollama_host: str = "http://localhost:11434",
         keyword_file: str = None,
+        dense_weight: float = 0.5, # Weight for dense retrieval score (0.0 to 1.0)
     ):
         self.chunks = chunks
         self.language = language
@@ -64,28 +67,77 @@ class BM25Retriever:
         self.keyword_boost = max(0.0, keyword_boost)
         self.keyword_extraction_method = keyword_extraction_method
         self.embedding_provider = embedding_provider
+        self.dense_weight = dense_weight
         
         self.embedding_model = None
         self.ollama_client = None
+        self.chunk_embeddings = None
+        self.faiss_index = None
 
-        if self.keyword_boost > 0 and self.keyword_extraction_method == "semantic":
-            if self.embedding_provider == "ollama":
+        # Initialize Embedding Model (for Dense Retrieval and/or Semantic Keywords)
+        if self.embedding_provider == "ollama":
+            try:
+                self.ollama_client = Client(host=ollama_host)
+                self.embedding_model = embedding_model_path
+                print(f"Using Ollama embedding model: {self.embedding_model}")
+            except Exception as e:
+                print(f"Failed to initialize Ollama client: {e}.")
+        else:
+            try:
+                self.embedding_model = SentenceTransformer(embedding_model_path)
+                print(f"Loaded local embedding model: {embedding_model_path}")
+            except Exception as e:
+                print(f"Failed to load local embedding model: {e}.")
+
+        # Handle FAISS Index and Embeddings
+        index_dir = Path("My_RAG/indices")
+        index_dir.mkdir(parents=True, exist_ok=True)
+        index_path = index_dir / f"faiss_index_{self.language}.bin"
+
+        if self.embedding_model:
+            if index_path.exists():
+                print(f"Loading existing FAISS index from {index_path}...")
                 try:
-                    self.ollama_client = Client(host=ollama_host)
-                    # For ollama, embedding_model_path is treated as the model name
-                    self.embedding_model = embedding_model_path 
-                    print(f"Using Ollama embedding model: {self.embedding_model}")
+                    self.faiss_index = faiss.read_index(str(index_path))
+                    # Reconstruct embeddings from index for use in hybrid scoring
+                    # Assuming IndexFlatIP, we can reconstruct the full matrix
+                    if isinstance(self.faiss_index, faiss.IndexFlat):
+                        # For IndexFlat, we can access the vectors directly
+                        # But read_index returns a generic Index, need to check ntotal
+                        ntotal = self.faiss_index.ntotal
+                        if ntotal == len(self.corpus):
+                            # Reconstruct all vectors: 0 to ntotal
+                            # This might be memory intensive but fast for scoring
+                            self.chunk_embeddings = self.faiss_index.reconstruct_n(0, ntotal)
+                            print(f"Loaded {ntotal} embeddings from FAISS index.")
+                        else:
+                            print(f"Warning: Index size ({ntotal}) does not match corpus size ({len(self.corpus)}). Re-computing.")
+                            self.faiss_index = None
+                    else:
+                         print("Loaded index is not IndexFlat, cannot reconstruct easily. Re-computing.")
+                         self.faiss_index = None
                 except Exception as e:
-                    print(f"Failed to initialize Ollama client: {e}. Reverting to simple extraction.")
-                    self.keyword_extraction_method = "simple"
-            else:
-                # Default to local SentenceTransformer
-                try:
-                    self.embedding_model = SentenceTransformer(embedding_model_path)
-                    print(f"Loaded local embedding model: {embedding_model_path}")
-                except Exception as e:
-                    print(f"Failed to load local embedding model: {e}. Reverting to simple extraction.")
-                    self.keyword_extraction_method = "simple"
+                    print(f"Error loading FAISS index: {e}. Re-computing.")
+                    self.faiss_index = None
+
+            if self.faiss_index is None:
+                print("Computing chunk embeddings for dense retrieval...")
+                embeddings = self._precompute_corpus_embeddings(self.corpus)
+                if embeddings is not None and len(embeddings) > 0:
+                    # Normalize for Cosine Similarity (IndexFlatIP)
+                    embeddings = embeddings.astype(np.float32)
+                    faiss.normalize_L2(embeddings)
+                    self.chunk_embeddings = embeddings
+                    
+                    dim = embeddings.shape[1]
+                    self.faiss_index = faiss.IndexFlatIP(dim)
+                    self.faiss_index.add(embeddings)
+                    
+                    print(f"Saving FAISS index to {index_path}...")
+                    faiss.write_index(self.faiss_index, str(index_path))
+                    print(f"Finished computing and saving embeddings for {len(self.corpus)} chunks.")
+                else:
+                    print("Failed to compute embeddings.")
 
         self.porter_stemmer = PorterStemmer()
         self.chinese_stop_words = load_chinese_stop_words()
@@ -139,11 +191,33 @@ class BM25Retriever:
             
         if self.embedding_provider == "ollama":
             # Ollama embed returns an object with .embeddings
-            response = self.ollama_client.embed(model=self.embedding_model, input=texts)
-            return response.embeddings
+            # Note: Ollama client might not support batching natively in one call for large lists depending on version,
+            # but usually handles list input.
+            try:
+                response = self.ollama_client.embed(model=self.embedding_model, input=texts)
+                return response.embeddings
+            except Exception as e:
+                print(f"Ollama embedding error: {e}")
+                return []
         else:
             # SentenceTransformer returns ndarray or list of ndarrays
             return self.embedding_model.encode(texts)
+
+    def _precompute_corpus_embeddings(self, texts: List[str], batch_size: int = 32):
+        all_embeddings = []
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            embeddings = self._compute_embeddings(batch)
+            if embeddings is not None and len(embeddings) > 0:
+                all_embeddings.extend(embeddings)
+            else:
+                # Fallback if embedding fails: use zero vectors
+                # Assuming dimension based on a test or default
+                dim = 384 # Default for all-minilm-l6-v2, will adapt if first batch succeeds
+                if all_embeddings:
+                    dim = len(all_embeddings[0])
+                all_embeddings.extend([[0.0] * dim] * len(batch))
+        return np.array(all_embeddings)
 
     def _extract_keywords_semantic(self, query, top_k=5):
         if not self.embedding_model:
@@ -170,9 +244,30 @@ class BM25Retriever:
         query_embedding = self._compute_embeddings([query])
         candidate_embeddings = self._compute_embeddings(candidates)
         
-        distances = cosine_similarity(query_embedding, candidate_embeddings)
+        
+        # Check if embeddings are valid
+        if not query_embedding or not candidate_embeddings:
+            return set()
+
+        # Manual cosine similarity calculation
+        query_vec = np.array(query_embedding).astype(np.float32)
+        query_norm = np.linalg.norm(query_vec)
+        if query_norm > 1e-9:
+            query_vec_norm = query_vec / query_norm
+        else:
+            return set() # Zero query vector
+
+        cand_vecs = np.array(candidate_embeddings).astype(np.float32)
+        cand_norms = np.linalg.norm(cand_vecs, axis=1, keepdims=True)
+        cand_vecs_norm = np.divide(cand_vecs, cand_norms, where=cand_norms > 1e-9)
+        
+        # Compute dot product
+        # query_vec_norm is (1, dim), cand_vecs_norm is (n_candidates, dim)
+        # Result will be (n_candidates, 1), flatten to (n_candidates,)
+        distances = np.dot(cand_vecs_norm, query_vec_norm.T).flatten()
+        
         # Get top indices
-        top_indices = distances.argsort()[0][-top_k:]
+        top_indices = np.argsort(distances)[-top_k:]
         
         keywords = {candidates[i] for i in top_indices}
         return keywords
@@ -193,16 +288,10 @@ class BM25Retriever:
         return sum(1 for kw in keywords if kw and kw in haystack)
 
     def retrieve(self, query, top_k=5, query_id=None):
+        is_unsolvable = False
         if (query_id is not None and str(query_id) in self.unsolvable_queries) or \
            (query.strip() in self.unsolvable_queries):
-            return [], {
-                "language": self.language,
-                "top_k": top_k,
-                "candidate_count": 0,
-                "keyword_info": None,
-                "results": [],
-                "unsolvable": True
-            }
+            is_unsolvable = True
 
         if not self.chunks:
             return [], {
@@ -211,56 +300,98 @@ class BM25Retriever:
                 "candidate_count": 0,
                 "keyword_info": None,
                 "results": [],
+                "unsolvable": is_unsolvable
             }
+
+        # 1. Sparse Retrieval (BM25)
         tokenized_query = self._tokenize(query)
         if not tokenized_query:
-            subset = self.chunks[:top_k]
-            return subset, {
-                "language": self.language,
-                "top_k": top_k,
-                "candidate_count": len(subset),
-                "keyword_info": None,
-                "results": [
-                    {
-                        "metadata": chunk.get("metadata", {}),
-                        "preview": chunk.get("page_content", "")[:200],
-                        "score": 0.0,
-                    }
-                    for chunk in subset
-                ],
-            }
+            bm25_scores = np.zeros(len(self.chunks))
+        else:
+            bm25_scores = np.array(self.bm25.get_scores(tokenized_query))
 
-        scores = self.bm25.get_scores(tokenized_query)
+        # 2. Dense Retrieval (Cosine Similarity)
+        dense_scores = np.zeros(len(self.chunks))
+        if self.chunk_embeddings is not None:
+            query_emb = self._compute_embeddings([query])
+            if query_emb is not None and len(query_emb) > 0:
+                # Check for zero vector to avoid RuntimeWarning
+                query_vec = np.array(query_emb).astype(np.float32) # Ensure consistent type
+                query_norm = np.linalg.norm(query_vec)
+                
+                if query_norm > 1e-9:
+                    # Normalize query vector
+                    query_vec_norm = query_vec / query_norm
+                    
+                    # Compute Dot Product: (1, dim) @ (n_chunks, dim).T -> (1, n_chunks)
+                    # chunk_embeddings are already normalized in __init__
+                    try:
+                        # self.chunk_embeddings is numpy array of shape (n_chunks, dim)
+                        # query_vec_norm is (1, dim) or (dim,)
+                        
+                        # Reshape query if needed to (1, dim)
+                        if query_vec_norm.ndim == 1:
+                            query_vec_norm = query_vec_norm.reshape(1, -1)
+                            
+                        # Dot product
+                        raw_dense_scores = np.dot(self.chunk_embeddings, query_vec_norm.T).flatten()
+                        
+                        # Replace NaNs (from zero vectors in chunks) with 0.0
+                        dense_scores = np.nan_to_num(raw_dense_scores, nan=0.0)
+                    except Exception as e:
+                        print(f"Error in dense retrieval scoring: {e}")
+                        dense_scores = np.zeros(len(self.chunks))
+                else:
+                    # Query embedding is effectively zero, skip dense retrieval
+                    dense_scores = np.zeros(len(self.chunks))
+
+        # 3. Score Normalization (Min-Max)
+        def normalize(scores):
+            if np.max(scores) == np.min(scores):
+                return scores
+            return (scores - np.min(scores)) / (np.max(scores) - np.min(scores))
+
+        bm25_norm = normalize(bm25_scores)
+        dense_norm = normalize(dense_scores)
+
+        # 4. Hybrid Score
+        # If no embeddings, pure BM25. If no BM25 tokens, pure Dense (or 0).
+        hybrid_scores = (1 - self.dense_weight) * bm25_norm + self.dense_weight * dense_norm
+
+        # 5. Candidate Selection (based on Hybrid Score)
         candidate_count = max(top_k, int(round(top_k * self.candidate_multiplier)))
         candidate_count = min(candidate_count, len(self.chunks))
-        top_indices = sorted(range(len(scores)), key=lambda idx: scores[idx], reverse=True)[:candidate_count]
+        
+        # Get indices of top hybrid scores
+        top_indices = np.argsort(hybrid_scores)[::-1][:candidate_count]
 
+        # 6. Keyword Boosting
         keyword_summary = None
         if self.keyword_boost > 0:
-            predefined_source = "dynamic_simple" # Default if nothing else matches
+            predefined_source = "dynamic_simple"
             keywords_to_use = set()
 
-            # Attempt to retrieve keywords by query_id first
             if query_id is not None and str(query_id) in self.predefined_keywords:
                 keywords_to_use = self.predefined_keywords[str(query_id)]
                 predefined_source = "query_id"
-            # If not found by query_id, try by query_text
             elif query.strip() in self.predefined_keywords:
                 keywords_to_use = self.predefined_keywords[query.strip()]
                 predefined_source = "query_text"
-            # If no predefined keywords found, perform dynamic extraction
-            else: # Fallback to simple dynamic extraction
-                if self.language == "zh":
+            else:
+                if self.keyword_extraction_method == "semantic" and self.embedding_model:
+                     keywords_to_use = self._extract_keywords_semantic(query)
+                     predefined_source = "dynamic_semantic"
+                elif self.language == "zh":
                     keywords_to_use = self._extract_keywords(tokenized_query)
                 else:
-                    # Use unstemmed tokens for keyword matching in raw text
                     raw_tokens = EN_TOKEN_PATTERN.findall(query.lower())
                     keywords_to_use = {
                         t for t in raw_tokens 
                         if t not in ENGLISH_STOP_WORDS_SET 
                         and len(t) >= self.min_keyword_characters
                     }
-                predefined_source = "dynamic_simple"
+                if not keywords_to_use and predefined_source == "dynamic_simple":
+                     predefined_source = "dynamic_simple" # Kept same
 
             keyword_summary = {
                 "keywords": sorted(list(keywords_to_use)),
@@ -268,12 +399,23 @@ class BM25Retriever:
                 "predefined_source": predefined_source,
                 "query_id_provided": query_id is not None,
             }
-            top_indices = sorted(
-                top_indices,
-                key=lambda idx: scores[idx] + self.keyword_boost * self._keyword_overlap(self.chunks[idx], keywords_to_use),
-                reverse=True,
-            )
+            
+            # Apply boost ONLY to the selected candidates
+            # We re-sort the top_indices based on (Hybrid Score + Boost)
+            # Note: hybrid_scores is array of all scores.
+            
+            boosted_scores = []
+            for idx in top_indices:
+                base_score = hybrid_scores[idx]
+                overlap = self._keyword_overlap(self.chunks[idx], keywords_to_use)
+                boosted_score = base_score + (self.keyword_boost * overlap)
+                boosted_scores.append((idx, boosted_score))
+            
+            # Sort by boosted score descending
+            boosted_scores.sort(key=lambda x: x[1], reverse=True)
+            top_indices = [x[0] for x in boosted_scores]
 
+        # 7. Final Selection
         selected = [self.chunks[idx] for idx in top_indices[:top_k]]
 
         retrieval_debug = {
@@ -285,10 +427,300 @@ class BM25Retriever:
                 {
                     "metadata": selected_chunk.get("metadata", {}),
                     "preview": selected_chunk.get("page_content", "")[:200],
-                    "score": scores[top_indices[idx]],
+                    "score": float(hybrid_scores[top_indices[idx]]), # Show hybrid score (pre-boost) or boosted? Let's show hybrid for clarity of base relevance
                 }
                 for idx, selected_chunk in enumerate(selected)
             ],
+            "unsolvable": is_unsolvable
+        }
+
+        return selected, retrieval_debug
+        p = Path(path)
+        if p.exists():
+            try:
+                with open(p, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        data = json.loads(line)
+                        content = data.get("content", "").strip()
+                        qid = data.get("query_id")
+                        keywords = data.get("keywords", [])
+                        unsolve = data.get("unsolve", 0)
+
+                        if unsolve == 1:
+                            if qid is not None:
+                                self.unsolvable_queries.add(str(qid))
+                            if content:
+                                self.unsolvable_queries.add(content)
+
+                        if keywords:
+                            kw_set = set(keywords)
+                            if content:
+                                self.predefined_keywords[content] = kw_set
+                            if qid is not None:
+                                self.predefined_keywords[str(qid)] = kw_set
+                print(f"Loaded keywords from {path}")
+            except Exception as e:
+                print(f"Error loading keywords from {path}: {e}")
+
+    def _tokenize(self, text: str):
+        if self.language == "zh":
+            tokens = [tok.strip() for tok in jieba.cut(text) if tok.strip()]
+            stop_words = self.chinese_stop_words
+            return [tok for tok in tokens if tok not in stop_words]
+
+        raw_tokens = EN_TOKEN_PATTERN.findall(text.lower())
+        filtered = [token for token in raw_tokens if token and token not in ENGLISH_STOP_WORDS_SET]
+        return [self._stem_english(token) for token in filtered]
+
+    def _stem_english(self, token: str) -> str:
+        return self.porter_stemmer.stem(token)
+
+    def _compute_embeddings(self, texts: List[str]) -> List[List[float]]:
+        if not texts:
+            return []
+            
+        if self.embedding_provider == "ollama":
+            # Ollama embed returns an object with .embeddings
+            # Note: Ollama client might not support batching natively in one call for large lists depending on version,
+            # but usually handles list input.
+            try:
+                response = self.ollama_client.embed(model=self.embedding_model, input=texts)
+                return response.embeddings
+            except Exception as e:
+                print(f"Ollama embedding error: {e}")
+                return []
+        else:
+            # SentenceTransformer returns ndarray or list of ndarrays
+            return self.embedding_model.encode(texts)
+
+    def _precompute_corpus_embeddings(self, texts: List[str], batch_size: int = 32):
+        all_embeddings = []
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            embeddings = self._compute_embeddings(batch)
+            if embeddings is not None and len(embeddings) > 0:
+                all_embeddings.extend(embeddings)
+            else:
+                # Fallback if embedding fails: use zero vectors
+                # Assuming dimension based on a test or default
+                dim = 384 # Default for all-minilm-l6-v2, will adapt if first batch succeeds
+                if all_embeddings:
+                    dim = len(all_embeddings[0])
+                all_embeddings.extend([[0.0] * dim] * len(batch))
+        return np.array(all_embeddings)
+
+    def _extract_keywords_semantic(self, query, top_k=5):
+        if not self.embedding_model:
+            return set()
+
+        if self.language == "zh":
+            tokens = [t for t in jieba.cut(query) if t.strip()]
+        else:
+            tokens = [t for t in query.split() if t.strip()]
+
+        candidates = set()
+        # Generate n-grams (1 to 4)
+        for n in range(1, 5):
+            for i in range(len(tokens) - n + 1):
+                ngram = "".join(tokens[i:i+n]) if self.language == "zh" else " ".join(tokens[i:i+n])
+                # Filter candidates: minimal length
+                if len(ngram.strip()) >= self.min_keyword_characters:
+                     candidates.add(ngram)
+        
+        candidates = list(candidates)
+        if not candidates:
+            return set()
+            
+        query_embedding = self._compute_embeddings([query])
+        candidate_embeddings = self._compute_embeddings(candidates)
+        
+        # Check if embeddings are valid
+        if not query_embedding or not candidate_embeddings:
+            return set()
+
+        # Manual cosine similarity for keywords as well (single query vs candidates)
+        # Normalize query
+        query_vec = np.array(query_embedding)
+        query_norm = np.linalg.norm(query_vec)
+        if query_norm > 1e-9:
+            query_vec = query_vec / query_norm
+        else:
+            return set() # Zero query vector
+
+        # Normalize candidates
+        cand_vecs = np.array(candidate_embeddings)
+        cand_norms = np.linalg.norm(cand_vecs, axis=1, keepdims=True)
+        # Avoid divide by zero
+        cand_vecs = np.divide(cand_vecs, cand_norms, where=cand_norms > 1e-9)
+        
+        # Dot product: (n_candidates, dim) @ (1, dim).T -> (n_candidates, 1)
+        # Note: query_vec is (1, dim)
+        distances = cand_vecs @ query_vec.T
+        
+        # Get top indices (flatten distances)
+        top_indices = distances.flatten().argsort()[-top_k:]
+        
+        keywords = {candidates[i] for i in top_indices}
+        return keywords
+
+    def _extract_keywords(self, tokens):
+        keywords = set()
+        for token in tokens:
+            normalized = token if self.language == "zh" else token.lower()
+            if len(normalized.strip()) >= self.min_keyword_characters:
+                keywords.add(normalized)
+        return keywords
+
+    def _keyword_overlap(self, chunk, keywords):
+        if not keywords:
+            return 0.0
+        text = chunk["page_content"]
+        haystack = text if self.language == "zh" else text.lower()
+        return sum(1 for kw in keywords if kw and kw in haystack)
+
+    def retrieve(self, query, top_k=5, query_id=None):
+        is_unsolvable = False
+        if (query_id is not None and str(query_id) in self.unsolvable_queries) or \
+           (query.strip() in self.unsolvable_queries):
+            is_unsolvable = True
+
+        if not self.chunks:
+            return [], {
+                "language": self.language,
+                "top_k": top_k,
+                "candidate_count": 0,
+                "keyword_info": None,
+                "results": [],
+                "unsolvable": is_unsolvable
+            }
+
+        # 1. Sparse Retrieval (BM25)
+        tokenized_query = self._tokenize(query)
+        if not tokenized_query:
+            bm25_scores = np.zeros(len(self.chunks))
+        else:
+            bm25_scores = np.array(self.bm25.get_scores(tokenized_query))
+
+        # 2. Dense Retrieval (Cosine Similarity)
+        dense_scores = np.zeros(len(self.chunks))
+        if self.chunk_embeddings is not None:
+            query_emb = self._compute_embeddings([query])
+            if query_emb is not None and len(query_emb) > 0:
+                # Check for zero vector to avoid RuntimeWarning
+                query_vec = np.array(query_emb).astype(np.float32)
+                query_norm = np.linalg.norm(query_vec)
+                
+                if query_norm > 1e-9:
+                    # Normalize query vector
+                    query_vec_norm = query_vec / query_norm
+                    
+                    try:
+                        # self.chunk_embeddings is numpy array of shape (n_chunks, dim)
+                        # query_vec_norm is (1, dim) or (dim,)
+                        
+                        # Reshape query if needed to (1, dim)
+                        if query_vec_norm.ndim == 1:
+                            query_vec_norm = query_vec_norm.reshape(1, -1)
+                            
+                        # Dot product
+                        raw_dense_scores = np.dot(self.chunk_embeddings, query_vec_norm.T).flatten()
+                        
+                        # Replace NaNs (from zero vectors in chunks) with 0.0
+                        dense_scores = np.nan_to_num(raw_dense_scores, nan=0.0)
+                    except Exception as e:
+                        print(f"Error in dense retrieval scoring: {e}")
+                        dense_scores = np.zeros(len(self.chunks))
+                else:
+                    # Query embedding is effectively zero, skip dense retrieval
+                    dense_scores = np.zeros(len(self.chunks))
+
+        # 3. Score Normalization (Min-Max)
+        def normalize(scores):
+            if np.max(scores) == np.min(scores):
+                return scores
+            return (scores - np.min(scores)) / (np.max(scores) - np.min(scores))
+
+        bm25_norm = normalize(bm25_scores)
+        dense_norm = normalize(dense_scores)
+
+        # 4. Hybrid Score
+        # If no embeddings, pure BM25. If no BM25 tokens, pure Dense (or 0).
+        hybrid_scores = (1 - self.dense_weight) * bm25_norm + self.dense_weight * dense_norm
+
+        # 5. Candidate Selection (based on Hybrid Score)
+        candidate_count = max(top_k, int(round(top_k * self.candidate_multiplier)))
+        candidate_count = min(candidate_count, len(self.chunks))
+        
+        # Get indices of top hybrid scores
+        top_indices = np.argsort(hybrid_scores)[::-1][:candidate_count]
+
+        # 6. Keyword Boosting
+        keyword_summary = None
+        if self.keyword_boost > 0:
+            predefined_source = "dynamic_simple"
+            keywords_to_use = set()
+
+            if query_id is not None and str(query_id) in self.predefined_keywords:
+                keywords_to_use = self.predefined_keywords[str(query_id)]
+                predefined_source = "query_id"
+            elif query.strip() in self.predefined_keywords:
+                keywords_to_use = self.predefined_keywords[query.strip()]
+                predefined_source = "query_text"
+            else:
+                if self.keyword_extraction_method == "semantic" and self.embedding_model:
+                     keywords_to_use = self._extract_keywords_semantic(query)
+                     predefined_source = "dynamic_semantic"
+                elif self.language == "zh":
+                    keywords_to_use = self._extract_keywords(tokenized_query)
+                else:
+                    raw_tokens = EN_TOKEN_PATTERN.findall(query.lower())
+                    keywords_to_use = {
+                        t for t in raw_tokens 
+                        if t not in ENGLISH_STOP_WORDS_SET 
+                        and len(t) >= self.min_keyword_characters
+                    }
+                if not keywords_to_use and predefined_source == "dynamic_simple":
+                     predefined_source = "dynamic_simple" # Kept same
+
+            keyword_summary = {
+                "keywords": sorted(list(keywords_to_use)),
+                "boost": self.keyword_boost,
+                "predefined_source": predefined_source,
+                "query_id_provided": query_id is not None,
+            }
+            
+            # Apply boost ONLY to the selected candidates
+            # We re-sort the top_indices based on (Hybrid Score + Boost)
+            # Note: hybrid_scores is array of all scores.
+            
+            boosted_scores = []
+            for idx in top_indices:
+                base_score = hybrid_scores[idx]
+                overlap = self._keyword_overlap(self.chunks[idx], keywords_to_use)
+                boosted_score = base_score + (self.keyword_boost * overlap)
+                boosted_scores.append((idx, boosted_score))
+            
+            # Sort by boosted score descending
+            boosted_scores.sort(key=lambda x: x[1], reverse=True)
+            top_indices = [x[0] for x in boosted_scores]
+
+        # 7. Final Selection
+        selected = [self.chunks[idx] for idx in top_indices[:top_k]]
+
+        retrieval_debug = {
+            "language": self.language,
+            "top_k": top_k,
+            "candidate_count": candidate_count,
+            "keyword_info": keyword_summary,
+            "results": [
+                {
+                    "metadata": selected_chunk.get("metadata", {}),
+                    "preview": selected_chunk.get("page_content", "")[:200],
+                    "score": float(hybrid_scores[top_indices[idx]]), # Show hybrid score (pre-boost) or boosted? Let's show hybrid for clarity of base relevance
+                }
+                for idx, selected_chunk in enumerate(selected)
+            ],
+            "unsolvable": is_unsolvable
         }
 
         return selected, retrieval_debug
