@@ -99,14 +99,30 @@ def main(query_path, docs_path, language, output_path):
                 print(f"    #{idx} score={score:.4f} meta={meta} preview={preview}")
 
         # 5. Generate Answer
-        # Use top 3 chunks for generation to provide better context
-        answer = generate_answer(query_text, retrieved_chunks[:3], language)
+        # 5. Generate Answer（加入「相似度 gate / unsolvable」邏輯）
+        is_unsolvable = retrieval_debug.get("unsolvable", False)
+        have_context = bool(retrieved_chunks)
+
+        if is_unsolvable or not have_context:
+            # 🔴 Gate 擋掉：完全不給 context，直接回固定答案
+            if language and language.startswith("zh"):
+                answer = "无法回答。"
+            else:
+                answer = "Unable to answer."
+
+            # 沒有用到任何文件，references 也留空
+            query["prediction"]["references"] = []
+        else:
+            # ✅ 正常流程：只用前 3 個 chunk 當 context 給 LLM
+            top_chunks = retrieved_chunks[:3]
+            answer = generate_answer(query_text, top_chunks, language)
+
+            # 把用到的 chunk 內容當作 reference 存起來（評分用）
+            query["prediction"]["references"] = [
+                chunk["page_content"] for chunk in top_chunks
+            ]
 
         query["prediction"]["content"] = answer
-        # Save top 3 chunks as references for evaluation
-        query["prediction"]["references"] = (
-            [chunk["page_content"] for chunk in retrieved_chunks[:3]] if retrieved_chunks else []
-        )
 
     save_jsonl(output_path, queries)
     print(f"Predictions saved at '{output_path}'")

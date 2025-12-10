@@ -17,17 +17,17 @@
   "score_zh.jsonl": {
     "Sentences_Precision": 0.11013548628176732,
     "Sentences_Recall": 0.5884018779803356,
-    "Words_Precision": 0.2104073770157267,
+    "Words_Precision": 0.21040737701572668,
     "Words_Recall": 0.7590784612393051,
-    "ROUGELScore": 0.4818009332611598,
+    "ROUGELScore": 0.4877380860889286,
     "completeness": 0.8571428571428571,
     "hallucination": 0.047619047619047616,
     "irrelevance": 0.09523809523809523,
-    "Words_F1": 0.3294853863280085,
+    "Words_F1": 0.32948538632800844,
     "Sentences_F1": 0.18554176276289744,
     "factual_score": 0.8095238095238095,
-    "Generation_Total_Score": 0.6456623713924847,
-    "Retrieval_Total_Score": 0.257513574545453
+    "Generation_Total_Score": 0.6486309478063691,
+    "Retrieval_Total_Score": 0.25751357454545293
   },
   "score_test_zh.jsonl": {
     "Sentences_Precision": 0.024904570884005366,
@@ -45,19 +45,19 @@
     "Retrieval_Total_Score": 0.10671687587555156
   },
   "score_en.jsonl": {
-    "Sentences_Precision": 0.10963153279725542,
+    "Sentences_Precision": 0.10942058147484013,
     "Sentences_Recall": 0.48991192870600064,
-    "Words_Precision": 0.23443400546978072,
-    "Words_Recall": 0.6885647560127243,
-    "ROUGELScore": 0.2409393958480949,
-    "completeness": 0.4,
-    "hallucination": 0.25,
-    "irrelevance": 0.35,
-    "Words_F1": 0.34977943744607054,
-    "Sentences_F1": 0.1791689814947865,
-    "factual_score": 0.15000000000000002,
-    "Generation_Total_Score": 0.19546969792404745,
-    "Retrieval_Total_Score": 0.26447420947042855
+    "Words_Precision": 0.23410837638209642,
+    "Words_Recall": 0.6914717327569102,
+    "ROUGELScore": 0.4663745247065898,
+    "completeness": 0.5541666666666666,
+    "hallucination": 0.08333333333333333,
+    "irrelevance": 0.3625,
+    "Words_F1": 0.34978998159417785,
+    "Sentences_F1": 0.178887169308723,
+    "factual_score": 0.47083333333333327,
+    "Generation_Total_Score": 0.4686039290199615,
+    "Retrieval_Total_Score": 0.26433857545145045
   },
   "predictions_zh_eval.jsonl": {
     "Sentences_Precision": 0.05831285882614827,
