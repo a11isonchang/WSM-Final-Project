@@ -17,17 +17,17 @@
   "score_zh.jsonl": {
     "Sentences_Precision": 0.11013548628176732,
     "Sentences_Recall": 0.5884018779803356,
-    "Words_Precision": 0.20122370354633895,
-    "Words_Recall": 0.745685604096448,
-    "ROUGELScore": 0.4859376030808609,
-    "completeness": 0.8285714285714285,
-    "hallucination": 0.047619047619047616,
-    "irrelevance": 0.12380952380952381,
-    "Words_F1": 0.3169250058614509,
+    "Words_Precision": 0.2104073770157267,
+    "Words_Recall": 0.7590784612393051,
+    "ROUGELScore": 0.4768147750195356,
+    "completeness": 0.8095238095238095,
+    "hallucination": 0.0,
+    "irrelevance": 0.19047619047619047,
+    "Words_F1": 0.3294853863280085,
     "Sentences_F1": 0.18554176276289744,
-    "factual_score": 0.7809523809523808,
-    "Generation_Total_Score": 0.6334449920166209,
-    "Retrieval_Total_Score": 0.2512333843121742
+    "factual_score": 0.8095238095238095,
+    "Generation_Total_Score": 0.6431692922716725,
+    "Retrieval_Total_Score": 0.257513574545453
   },
   "score_test_zh.jsonl": {
     "Sentences_Precision": 0.024904570884005366,
@@ -45,19 +45,19 @@
     "Retrieval_Total_Score": 0.10671687587555156
   },
   "score_en.jsonl": {
-    "Sentences_Precision": 0.10932794719030514,
+    "Sentences_Precision": 0.10942058147484013,
     "Sentences_Recall": 0.48991192870600064,
-    "Words_Precision": 0.23281061890701335,
+    "Words_Precision": 0.23410837638209642,
     "Words_Recall": 0.6914717327569102,
-    "ROUGELScore": 0.26026396470305974,
-    "completeness": 0.4604166666666667,
+    "ROUGELScore": 0.2686016788565342,
+    "completeness": 0.4729166666666667,
     "hallucination": 0.20833333333333331,
-    "irrelevance": 0.33125,
-    "Words_F1": 0.34833936138678,
-    "Sentences_F1": 0.1787633554571343,
-    "factual_score": 0.2520833333333334,
-    "Generation_Total_Score": 0.25617364901819656,
-    "Retrieval_Total_Score": 0.26355135842195715
+    "irrelevance": 0.31875,
+    "Words_F1": 0.34978998159417785,
+    "Sentences_F1": 0.178887169308723,
+    "factual_score": 0.2645833333333334,
+    "Generation_Total_Score": 0.2665925060949338,
+    "Retrieval_Total_Score": 0.26433857545145045
   },
   "predictions_zh_eval.jsonl": {
     "Sentences_Precision": 0.05831285882614827,
