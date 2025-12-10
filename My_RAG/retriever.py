@@ -12,10 +12,25 @@ from pathlib import Path
 from functools import lru_cache
 from typing import List, Dict, Any, Optional
 from ollama import Client
-
+from config import load_config
+from kg_retriever import create_kg_retriever
 
 EN_TOKEN_PATTERN = re.compile(r"[a-z0-9']+")
 ENGLISH_STOP_WORDS_SET = set(ENGLISH_STOP_WORDS)
+
+def load_ollama_config() -> dict:
+    """
+    讀取 config.yaml 內的 ollama 設定。
+    預期結構：
+    ollama:
+      host: http://127.0.0.1:11434
+      model: your-model-name
+    """
+    config = load_config()
+    assert "ollama" in config, "Ollama configuration not found in config file."
+    assert "host" in config["ollama"], "Ollama host not specified in config file."
+    assert "model" in config["ollama"], "Ollama model not specified in config file."
+    return config["ollama"]
 
 
 @lru_cache()
@@ -484,3 +499,164 @@ def create_retriever(chunks, language, config=None):
         ollama_host=config.get("ollama_host", "http://ollama-gateway:11434"),
         keyword_file=config.get("keyword_file", "database/database.jsonl"),
     )
+
+def analysis_retriever_result(
+    query: str,
+    context_chunks: List[Dict[str, Any]],
+    language: str,
+) -> str:
+    """
+    透過llm根據queries、retrive到的文章，判斷夠不夠、準不準，不夠的話再用kg
+    
+    Returns:
+        "sufficient" 或 "use_kg"
+    """
+    if not context_chunks:
+        return "use_kg"
+    
+    # 構建context字符串
+    context_parts = []
+    for i, chunk in enumerate(context_chunks, start=1):
+        content = chunk.get("page_content", "").strip()
+        if content:
+            # 限制每個chunk的長度，避免prompt太長
+            if len(content) > 500:
+                content = content[:500] + "..."
+            context_parts.append(f"[Chunk {i}]\n{content}")
+    
+    context = "\n\n".join(context_parts)
+    
+    # 創建prompt
+    prompt = _create_prompt(query, context, language)
+    
+    try:
+        print("🐯 analysis! query:"+query)
+
+        cfg = load_ollama_config()
+        client = Client(host=cfg["host"])
+        response = client.generate(
+            model=cfg["model"],
+            prompt=prompt,
+            stream=False,
+            options={
+                "temperature": 0.1,
+                "num_ctx": 2048,
+            },
+        )
+        
+        result = (response.get("response", "") or "").strip().lower()
+        print("🐯 analysis! result:"+result)
+        
+        # 檢查結果
+        if "sufficient" in result:
+            return "sufficient"
+        elif "use_kg" in result or "kg" in result:
+            return "use_kg"
+        else:
+            # 默認返回use_kg，確保安全
+            return "use_kg"
+    except Exception as e:
+        print(f"Error in analysis_retriever_result: {e}")
+        # 遇到錯誤時默認使用KG，確保不會遺漏信息
+        return "use_kg"
+
+def _create_prompt(query: str, context: str, language: str) -> str:
+    """
+    analysis_retriever_result用的prompt
+    """
+    if language == "zh":
+        return f"""你是一个评估检索结果的助手。请根据以下【问题】和【检索到的内容】，判断这些内容是否足够且准确来回答问题。
+
+问题：
+{query}
+
+检索到的内容：
+{context}
+
+请评估：
+1. 这些内容是否足够回答这个问题？（是否包含回答问题所需的关键信息）
+2. 这些内容是否准确相关？（是否与问题直接相关，没有太多无关信息）
+
+请只输出以下两种标签之一：
+- "sufficient"：内容足够且准确，可以直接回答问题
+- "use_kg"：内容不够充分或不准确，需要使用知识图谱检索补充
+
+只输出标签，不要输出其他文字。"""
+    else:
+        return f"""You are an assistant evaluating retrieval results. Please judge whether the retrieved content is sufficient and accurate to answer the question.
+
+Question:
+{query}
+
+Retrieved Content:
+{context}
+
+Please evaluate:
+1. Is the content sufficient to answer this question? (Does it contain the key information needed?)
+2. Is the content accurate and relevant? (Is it directly related to the question without too much irrelevant information?)
+
+Please output only one of the following labels:
+- "sufficient": Content is sufficient and accurate, can directly answer the question
+- "use_kg": Content is insufficient or inaccurate, need to use knowledge graph retrieval to supplement
+
+Output only the label, no other text."""
+def kg_retriever(
+    query: str,
+    language: str,
+    all_chunks: List[Dict[str, Any]],
+    top_k: int = 5,
+) -> List[Dict[str, Any]]:
+    """
+    使用 My_RAG/kg_output.json 的三元組圖做 KG 檢索。
+
+    流程：
+    1. 用 KGRetriever 依 query 算出 KG-based doc 排序 (doc_id list)
+    2. 依 doc_id 到 all_chunks 裡撈出對應 chunks
+    3. 每個 doc 取 1~2 個代表 chunk，最後回傳最多 top_k 個 chunks
+    """
+    try:
+        kg_ret = create_kg_retriever(
+            kg_path="My_RAG/kg_output.json",
+            language=language,
+        )
+
+        print("🐯 kg! " + query)
+
+        # 1) 依 KG 拿到 doc_id 排序
+        doc_ids = kg_ret.retrieve_doc_ids(query, top_k=top_k * 3)  # 多取一些 doc 以備選
+        if not doc_ids:
+            return []
+
+        # 轉成 set 方便查
+        doc_id_set = set(doc_ids)
+
+        # 2) 先依 doc_id 在 all_chunks 裡聚 group
+        #    doc_id -> [chunks...]
+        doc_to_chunks: Dict[Any, List[Dict[str, Any]]] = {}
+        for chunk in all_chunks:
+            meta = chunk.get("metadata", {})
+            doc_id = meta.get("doc_id")
+            if doc_id in doc_id_set:
+                doc_to_chunks.setdefault(doc_id, []).append(chunk)
+
+        # 3) 按照 KG 排序的 doc_ids，對每個 doc 選 1~2 個代表 chunk
+        selected_chunks: List[Dict[str, Any]] = []
+        for doc_id in doc_ids:
+            chunks = doc_to_chunks.get(doc_id)
+            if not chunks:
+                continue
+
+            # 這裡可以做更聰明的挑選（例如選最長、包含最多關鍵詞的 chunk）
+            # 目前先簡單取前 2 個
+            for c in chunks[:2]:
+                selected_chunks.append(c)
+                if len(selected_chunks) >= top_k:
+                    break
+            if len(selected_chunks) >= top_k:
+                break
+
+        return selected_chunks[:top_k]
+
+    except Exception as e:
+        print(f"Error in kg_retriever: {e}")
+        return []

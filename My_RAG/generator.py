@@ -79,7 +79,7 @@ Output only one character: A, B, or C."""
             prompt=prompt,
             stream=False,
             options={
-                "temperature": 0.0,
+                "temperature": 0.1,
                 "num_ctx": 2048,
             },
         )

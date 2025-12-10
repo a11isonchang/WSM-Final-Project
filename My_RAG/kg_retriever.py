@@ -1,248 +1,273 @@
-"""
-基于知识图谱的检索器
-通过kg_output.json中的实体和关系，根据query检索相关的文档
-"""
+# My_RAG/kg_retriever.py
 
 import json
+from pathlib import Path
+from typing import Dict, List, Any, Tuple, Set
+from collections import defaultdict, deque
+from functools import lru_cache
 import jieba
 import re
-from typing import List, Dict, Any, Set, Optional
-from pathlib import Path
-from functools import lru_cache
+
+EN_TOKEN_PATTERN = re.compile(r"[a-z0-9']+", re.IGNORECASE)
 
 
 class KGRetriever:
-    """基于知识图谱的检索器，用于提升检索精度"""
-    
-    def __init__(self, kg_path: str = "My_RAG/kg_output.json", language: str = "en"):
-        """
-        初始化知识图谱检索器
-        
-        Args:
-            kg_path: 知识图谱文件路径
-            language: 语言类型 ("zh" 或 "en")
-        """
+    """
+    Relation-aware、多跳的 KG 檢索器。
+
+    讀取 build_kg.py 產生的 kg_output.json：
+    {
+      "entities": [...],
+      "relations": [...],
+      "triples": [
+        {
+          "head": "...",
+          "head_id": "e1",
+          "head_type": "Company",
+          "relation": "ACQUIRES",
+          "tail": "...",
+          "tail_id": "e2",
+          "tail_type": "Company",
+          "doc_id": 12,
+          "properties": {...}
+        },
+        ...
+      ],
+      ...
+    }
+
+    功能：
+    - 依 triples 建 entity graph：entity_id <-> entity_id (with relation, doc_id)
+    - 依 query 解析出相關實體 → 多源 BFS（最多 max_hops）
+    - 輸出：依 KG 分數排序的 doc_id list
+    """
+
+    def __init__(
+        self,
+        kg_path: str,
+        language: str = "zh",
+        max_hops: int = 2,
+        alpha_entity: float = 1.0,
+        beta_cooccur: float = 2.0,
+        gamma_path: float = 1.0,
+    ):
         self.language = language
-        self.kg_data = self._load_kg(kg_path)
-        self.entity_index = self._build_entity_index()
-        self.entity_to_docs = self._build_entity_doc_mapping()
-        self.relation_index = self._build_relation_index()
-        
-    def _load_kg(self, kg_path: str) -> Dict[str, Any]:
-        """加载知识图谱JSON文件"""
+        self.max_hops = max_hops
+        self.alpha = alpha_entity
+        self.beta = beta_cooccur
+        self.gamma = gamma_path
+
+        # ---- 從 kg_output.json 載入資料 ----
         path = Path(kg_path)
         if not path.exists():
-            print(f"Warning: KG file not found at {kg_path}")
-            return {"entities": [], "relations": []}
-        
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    
-    def _build_entity_index(self) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        建立实体名称到实体对象的索引
-        支持模糊匹配（包含关系）
-        """
-        index = {}
-        entities = self.kg_data.get("entities", [])
-        
-        for entity in entities:
-            name = entity.get("name", "").strip()
-            if not name:
+            raise FileNotFoundError(f"KG file not found: {kg_path}")
+
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        self.entities: List[Dict[str, Any]] = data.get("entities", [])
+        self.triples: List[Dict[str, Any]] = data.get("triples", [])
+        self.relations: List[Dict[str, Any]] = data.get("relations", [])
+
+        if not self.triples:
+            print("[KGRetriever] Warning: 'triples' is empty in kg_output.json. "
+                  "Make sure you are using the updated build_kg.py that outputs triples.")
+
+        # ---- entity_id -> {name, type} ----
+        self.entity_info: Dict[str, Dict[str, Any]] = {}
+        for ent in self.entities:
+            eid = ent.get("id")
+            if not eid:
                 continue
-            
-            # 直接匹配
-            if name not in index:
-                index[name] = []
-            index[name].append(entity)
-            
-            # 对于中文，也添加分词后的关键词
-            if self.language == "zh":
-                # 提取关键词（去除常见停用词）
-                tokens = list(jieba.cut(name))
-                for token in tokens:
-                    if len(token) >= 2:  # 至少2个字符
-                        if token not in index:
-                            index[token] = []
-                        if entity not in index[token]:
-                            index[token].append(entity)
-        
-        return index
-    
-    def _build_entity_doc_mapping(self) -> Dict[str, Set[int]]:
-        """
-        建立实体ID到doc_id集合的映射
-        通过relations找到实体关联的文档
-        """
-        entity_to_docs = {}
-        relations = self.kg_data.get("relations", [])
-        
-        for relation in relations:
-            source_id = relation.get("source")
-            target_id = relation.get("target")
-            doc_id = relation.get("doc_id")
-            
-            if doc_id is not None:
-                if source_id not in entity_to_docs:
-                    entity_to_docs[source_id] = set()
-                entity_to_docs[source_id].add(doc_id)
-                
-                if target_id not in entity_to_docs:
-                    entity_to_docs[target_id] = set()
-                entity_to_docs[target_id].add(doc_id)
-        
-        return entity_to_docs
-    
-    def _build_relation_index(self) -> Dict[str, List[Dict[str, Any]]]:
-        """建立关系类型索引，用于更精确的检索"""
-        index = {}
-        relations = self.kg_data.get("relations", [])
-        
-        for relation in relations:
-            rel_type = relation.get("type", "")
-            if rel_type:
-                if rel_type not in index:
-                    index[rel_type] = []
-                index[rel_type].append(relation)
-        
-        return index
-    
-    def _extract_entities_from_query(self, query: str) -> List[Dict[str, Any]]:
-        """
-        从query中提取实体
-        使用字符串匹配和关键词匹配
-        """
-        found_entities = []
-        query_lower = query.lower() if self.language == "en" else query
-        
-        # 1. 精确匹配实体名称
-        for entity_name, entities in self.entity_index.items():
-            if entity_name in query_lower:
-                found_entities.extend(entities)
-        
-        # 2. 对于中文，使用分词匹配
-        if self.language == "zh":
-            query_tokens = list(jieba.cut(query))
-            for token in query_tokens:
-                if len(token) >= 2 and token in self.entity_index:
-                    found_entities.extend(self.entity_index[token])
-        
-        # 去重（基于entity id）
-        seen_ids = set()
-        unique_entities = []
-        for entity in found_entities:
-            entity_id = entity.get("id")
-            if entity_id and entity_id not in seen_ids:
-                seen_ids.add(entity_id)
-                unique_entities.append(entity)
-        
-        return unique_entities
-    
-    def _extract_keywords_from_query(self, query: str) -> Set[str]:
-        """从query中提取关键词，用于匹配实体属性"""
-        keywords = set()
-        
-        if self.language == "zh":
-            tokens = list(jieba.cut(query))
-            # 提取长度>=2的词
-            keywords = {t for t in tokens if len(t) >= 2}
-        else:
-            # 英文：提取单词
-            words = re.findall(r'\b\w+\b', query.lower())
-            keywords = {w for w in words if len(w) >= 3}
-        
-        return keywords
-    
-    def retrieve_doc_ids(self, query: str, top_k: int = 10) -> List[int]:
-        """
-        根据query检索相关的doc_id
-        
-        Args:
-            query: 查询文本
-            top_k: 返回的doc_id数量上限
-            
-        Returns:
-            相关的doc_id列表，按相关性排序
-        """
-        # 1. 从query中提取实体
-        entities = self._extract_entities_from_query(query)
-        
-        # 2. 收集所有相关的doc_id
-        doc_id_scores = {}  # doc_id -> score
-        
-        for entity in entities:
-            entity_id = entity.get("id")
-            if entity_id in self.entity_to_docs:
-                # 实体直接匹配：高分
-                for doc_id in self.entity_to_docs[entity_id]:
-                    doc_id_scores[doc_id] = doc_id_scores.get(doc_id, 0) + 2.0
-        
-        # 3. 通过关系查找相关文档
-        keywords = self._extract_keywords_from_query(query)
-        relations = self.kg_data.get("relations", [])
-        
-        for relation in relations:
-            rel_type = relation.get("type", "").lower()
-            source_id = relation.get("source")
-            target_id = relation.get("target")
-            doc_id = relation.get("doc_id")
-            
+            self.entity_info[eid] = {
+                "name": ent.get("name", ""),
+                "type": ent.get("type", ""),
+                "properties": ent.get("properties", {}) or {},
+            }
+
+        # ---- entity_name 索引（用來從 query 找實體）----
+        # 有些名字可能重複，這裡允許一個 name 對應多個 id
+        self.name_to_ids: Dict[str, Set[str]] = defaultdict(set)
+        for eid, info in self.entity_info.items():
+            name = (info.get("name") or "").strip()
+            if name:
+                self.name_to_ids[name].add(eid)
+
+        # ---- entity graph + entity_docs ----
+        self.graph: Dict[str, List[Tuple[str, str, int]]] = defaultdict(list)
+        # entity_id -> set(doc_id)
+        self.entity_docs: Dict[str, Set[int]] = defaultdict(set)
+
+        for tri in self.triples:
+            h_id = tri.get("head_id")
+            t_id = tri.get("tail_id")
+            rel_type = tri.get("relation", "")
+            doc_id = tri.get("doc_id")
+
+            if not h_id or not t_id:
+                continue
+
+            # 無 doc_id 的 triple 對檢索幫助不大，可以跳過
             if doc_id is None:
                 continue
-            
-            # 检查关系类型是否与query相关
-            if any(kw in rel_type for kw in keywords):
-                doc_id_scores[doc_id] = doc_id_scores.get(doc_id, 0) + 1.5
-            
-            # 检查关系属性是否与query相关
-            rel_props = relation.get("properties", {})
-            for prop_key, prop_value in rel_props.items():
-                if isinstance(prop_value, str):
-                    if any(kw in prop_value for kw in keywords):
-                        doc_id_scores[doc_id] = doc_id_scores.get(doc_id, 0) + 1.0
-        
-        # 4. 检查实体属性是否与query相关
-        for entity in entities:
-            props = entity.get("properties", {})
-            keywords = self._extract_keywords_from_query(query)
-            
-            for prop_key, prop_value in props.items():
-                if isinstance(prop_value, str):
-                    if any(kw in prop_value for kw in keywords):
-                        entity_id = entity.get("id")
-                        if entity_id in self.entity_to_docs:
-                            for doc_id in self.entity_to_docs[entity_id]:
-                                doc_id_scores[doc_id] = doc_id_scores.get(doc_id, 0) + 0.5
-        
-        # 5. 按分数排序并返回top_k
-        sorted_docs = sorted(doc_id_scores.items(), key=lambda x: x[1], reverse=True)
-        return [doc_id for doc_id, score in sorted_docs[:top_k]]
-    
-    def get_entity_info(self, query: str) -> Dict[str, Any]:
+
+            # 當作無向圖：head <-> tail
+            self.graph[h_id].append((t_id, rel_type, doc_id))
+            self.graph[t_id].append((h_id, rel_type, doc_id))
+
+            self.entity_docs[h_id].add(doc_id)
+            self.entity_docs[t_id].add(doc_id)
+
+        print(
+            f"[KGRetriever] Loaded {len(self.entities)} entities, "
+            f"{len(self.relations)} relations, {len(self.triples)} triples "
+            f"from {kg_path}"
+        )
+
+    # ---------- Query 解析：從 query 抓出 KG 實體 ----------
+
+    def _tokenize_query(self, query: str) -> Tuple[str, List[str]]:
+        if self.language == "zh":
+            q_text = (query or "").strip()
+            tokens = [t.strip() for t in jieba.cut(q_text) if t.strip()]
+        else:
+            q_text = (query or "").lower()
+            tokens = EN_TOKEN_PATTERN.findall(q_text)
+        return q_text, tokens
+
+    def _extract_query_entities(self, query: str) -> List[str]:
         """
-        获取query中提取到的实体信息（用于调试）
+        從 query 中找到可能對應到 KG entity 的 entity_id 列表。
+
+        策略：
+        - 中文：用 entity name 做 substring 比對（跳過太短的名字）
+        - 英文：lowercase 後，用 entity name 的 lowercase 做 substring
         """
-        entities = self._extract_entities_from_query(query)
-        doc_ids = self.retrieve_doc_ids(query, top_k=10)
-        
-        return {
-            "entities_found": [
-                {
-                    "id": e.get("id"),
-                    "name": e.get("name"),
-                    "type": e.get("type")
-                }
-                for e in entities
-            ],
-            "related_doc_ids": doc_ids,
-            "entity_count": len(entities)
-        }
+        query = (query or "").strip()
+        if not query:
+            return []
+
+        q_text, tokens = self._tokenize_query(query)
+        q_entities: Set[str] = set()
+
+        if self.language == "zh":
+            for name, ids in self.name_to_ids.items():
+                n = name.strip()
+                # 避免單字或一個字的 noise
+                if len(n) < 2:
+                    continue
+                if n in q_text:
+                    q_entities.update(ids)
+        else:
+            q_lower = q_text.lower()
+            for name, ids in self.name_to_ids.items():
+                n = (name or "").strip()
+                if not n:
+                    continue
+                n_lower = n.lower()
+                # 名字本身太短也容易誤中，略過長度 < 3 的
+                if len(n_lower) < 3:
+                    continue
+                if n_lower in q_lower:
+                    q_entities.update(ids)
+
+        return list(q_entities)
+
+    # ---------- 多源 BFS：從 query entities 出發找 doc ----------
+
+    def _bfs_docs_from_entities(self, start_entities: List[str]) -> Dict[int, float]:
+        """
+        從多個實體同時出發做 BFS，最多走 self.max_hops。
+        回傳：doc_id -> KG BFS 分數
+
+        距離 d 的 entity / edge 對應的 doc，貢獻 1/(1+d)
+        """
+        if not start_entities:
+            return {}
+
+        doc_scores: Dict[int, float] = defaultdict(float)
+        q: deque = deque()
+        dist_map: Dict[str, int] = {}
+
+        for eid in start_entities:
+            if eid not in self.graph and eid not in self.entity_docs:
+                continue
+            q.append((eid, 0))
+            dist_map[eid] = 0
+
+        while q:
+            eid, dist = q.popleft()
+            if dist > self.max_hops:
+                continue
+
+            # 這個節點本身出現的所有 doc
+            for doc_id in self.entity_docs.get(eid, []):
+                doc_scores[doc_id] += 1.0 / (1.0 + dist)
+
+            # 往 neighbor 展開
+            for neighbor_id, rel_type, doc_id in self.graph.get(eid, []):
+                next_dist = dist + 1
+                if next_dist > self.max_hops:
+                    continue
+                if neighbor_id not in dist_map or next_dist < dist_map[neighbor_id]:
+                    dist_map[neighbor_id] = next_dist
+                    q.append((neighbor_id, next_dist))
+
+        return doc_scores
+
+    # ---------- 主 API：依 KG 分數排序 doc_id ----------
+
+    def retrieve_doc_ids(self, query: str, top_k: int = 10) -> List[int]:
+        """
+        主入口：給 query，回傳依 KG 重要性排序的 doc_id 清單。
+
+        KG 分數由三部分組成：
+        1. entity match：doc 裡包含多少個 query 相關實體 → alpha * count
+        2. co-occurrence：若 doc 同時包含 >=2 個 query 實體 → beta * (count-1)
+        3. multi-hop BFS：從 query entities 出發，用 1/(1+hop) 累加 → gamma * bfs_score
+        """
+        query = (query or "").strip()
+        if not query:
+            return []
+
+        # 1) 找出 query 中的 KG 實體
+        q_entities = self._extract_query_entities(query)
+        if not q_entities:
+            return []
+
+        # 2) entity-level scoring
+        doc_entity_count: Dict[int, int] = defaultdict(int)
+
+        for eid in q_entities:
+            for doc_id in self.entity_docs.get(eid, []):
+                doc_entity_count[doc_id] += 1
+
+        doc_scores: Dict[int, float] = defaultdict(float)
+        for doc_id, cnt in doc_entity_count.items():
+            # 每個 doc 中命中的 query-related entity 數
+            doc_scores[doc_id] += self.alpha * cnt
+            if cnt >= 2:
+                doc_scores[doc_id] += self.beta * (cnt - 1)
+
+        # 3) BFS Multi-hop scoring
+        bfs_scores = self._bfs_docs_from_entities(q_entities)
+        for doc_id, s in bfs_scores.items():
+            doc_scores[doc_id] += self.gamma * s
+
+        if not doc_scores:
+            return []
+
+        # 4) 排序後取前 top_k
+        sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)
+        top_docs = [doc_id for doc_id, _ in sorted_docs[:top_k]]
+
+        return top_docs
 
 
-@lru_cache(maxsize=1)
-def create_kg_retriever(kg_path: str = "My_RAG/kg_output.json", language: str = "en") -> KGRetriever:
+@lru_cache()
+def create_kg_retriever(kg_path: str, language: str = "zh") -> KGRetriever:
     """
-    创建并缓存知识图谱检索器（单例模式）
+    工廠函式（帶快取），和 retriever.py 中的 import 介面一致：
+    from kg_retriever import create_kg_retriever
     """
-    return KGRetriever(kg_path, language)
-
+    return KGRetriever(kg_path=kg_path, language=language)

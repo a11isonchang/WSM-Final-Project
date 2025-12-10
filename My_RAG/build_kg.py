@@ -995,24 +995,29 @@ Output only JSON, no other text."""
 # =========================
 # 合併多文件的 KG 結果
 # =========================
-
 def merge_knowledge_graphs(kg_results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     合并多个文档的知识图谱提取结果
 
     返回格式：
     {
-        "entities": [...],  # 所有实体，去重
-        "relations": [...],  # 所有关系
+        "entities": [...],   # 去重後的實體
+        "relations": [...],  # 已更新 source/target 為全局 id，並帶 doc_id
+        "triples": [...],    # ⭐ 方便檢索的三元組列表 (head, relation, tail, doc_id, ...)
         "doc_mapping": {...},
         "statistics": {...}
     }
     """
     all_entities: List[Dict[str, Any]] = []
     all_relations: List[Dict[str, Any]] = []
-    entity_map: Dict[str, Dict[str, Any]] = {}    # key: "type:name" -> entity
-    entity_id_mapping: Dict[str, str] = {}        # 原始ID -> 新ID
+
+    # key: "type:name" -> entity（用來做去重）
+    entity_map: Dict[str, Dict[str, Any]] = {}
+    # 原始 per-doc entity id -> 全局 entity id（e1, e2, ...）
+    entity_id_mapping: Dict[str, str] = {}
     next_entity_id = 1
+
+    # doc_id -> 該 doc 牽涉到的全局 entity ids / relation indices
     doc_mapping: Dict[int, Dict[str, Any]] = {}
 
     for kg_result in kg_results:
@@ -1035,6 +1040,7 @@ def merge_knowledge_graphs(kg_results: List[Dict[str, Any]]) -> Dict[str, Any]:
             # 標準化名稱
             normalized_name = " ".join(entity_name.split())
             if entity_type in ["Time", "Amount", "FinancialMetric"]:
+                # 對時間、金額等，不特別壓空白，避免失真
                 normalized_name = entity_name.strip()
 
             key = f"{entity_type}:{normalized_name}"
@@ -1057,19 +1063,18 @@ def merge_knowledge_graphs(kg_results: List[Dict[str, Any]]) -> Dict[str, Any]:
                 existing_props = existing_entity.get("properties", {}) or {}
                 new_props = entity.get("properties", {}) or {}
 
+                # description 特別處理：盡量拼起來，不要覆蓋
                 if "description" in new_props and "description" in existing_props:
                     if new_props["description"] not in existing_props["description"]:
                         existing_props["description"] += f"; {new_props['description']}"
                 elif "description" in new_props:
                     existing_props["description"] = new_props["description"]
 
+                # 其他屬性：簡單 merge（新值補到舊值裡）
                 for k, v in new_props.items():
                     if k == "description":
                         continue
-                    # 非 description：若原本沒有，或原本是字串現在是數值，就覆蓋
-                    if k not in existing_props or (
-                        isinstance(v, (int, float)) and isinstance(existing_props.get(k), str)
-                    ):
+                    if k not in existing_props:
                         existing_props[k] = v
 
                 existing_entity["properties"] = existing_props
@@ -1082,12 +1087,18 @@ def merge_knowledge_graphs(kg_results: List[Dict[str, Any]]) -> Dict[str, Any]:
                 doc_entity_ids.append(final_id)
 
         # === 處理關係（更新 source/target ID，並簡單去重） ===
-        existing_relation_keys = {(r["source"], r["target"], r["type"]) for r in all_relations}
+        # 注意：existing_relation_keys 必須在「所有 doc 共用」，所以放在外面
+        # 但這裡要先確保它已經存在於外層 scope
+        # 我們可以在這裡判斷，如果 all_relations 是空的才初始化，避免每次 loop 重建
+        if not hasattr(merge_knowledge_graphs, "_relation_keys"):
+            merge_knowledge_graphs._relation_keys = set()
+        existing_relation_keys = merge_knowledge_graphs._relation_keys  # type: ignore
 
         for relation in kg_result.get("relations", []):
             source_old = relation.get("source", "")
             target_old = relation.get("target", "")
 
+            # 把原始 per-doc entity id 映射到全局 id
             source_new = entity_id_mapping.get(source_old, source_old)
             target_new = entity_id_mapping.get(target_old, target_old)
 
@@ -1099,7 +1110,7 @@ def merge_knowledge_graphs(kg_results: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "doc_id": doc_id,
             }
 
-            relation_key = (source_new, target_new, relation_obj["type"])
+            relation_key = (relation_obj["source"], relation_obj["target"], relation_obj["type"], doc_id)
             if relation_key not in existing_relation_keys:
                 all_relations.append(relation_obj)
                 existing_relation_keys.add(relation_key)
@@ -1110,17 +1121,45 @@ def merge_knowledge_graphs(kg_results: List[Dict[str, Any]]) -> Dict[str, Any]:
             "relations": doc_relation_ids,
         }
 
+    # === 生成三元組 triple list (head, relation, tail, doc_id, ...) ===
+    id_to_entity = {e["id"]: e for e in all_entities if "id" in e}
+    triples: List[Dict[str, Any]] = []
+
+    for rel in all_relations:
+        src_id = rel.get("source")
+        tgt_id = rel.get("target")
+        rel_type = rel.get("type", "")
+        doc_id = rel.get("doc_id")
+
+        head_ent = id_to_entity.get(src_id, {})
+        tail_ent = id_to_entity.get(tgt_id, {})
+
+        triples.append(
+            {
+                "head": head_ent.get("name", src_id),
+                "head_id": src_id,
+                "head_type": head_ent.get("type", ""),
+                "relation": rel_type,
+                "tail": tail_ent.get("name", tgt_id),
+                "tail_id": tgt_id,
+                "tail_type": tail_ent.get("type", ""),
+                "doc_id": doc_id,
+                "properties": rel.get("properties", {}) or {},
+            }
+        )
+
     return {
         "entities": all_entities,
         "relations": all_relations,
+        "triples": triples,  # ⭐ 給 retriever 用的 head–relation–tail–doc_id 三元組
         "doc_mapping": doc_mapping,
         "statistics": {
             "total_entities": len(all_entities),
             "total_relations": len(all_relations),
+            "total_triples": len(triples),
             "total_docs": len(doc_mapping),
         },
     }
-
 
 # =========================
 # Checkpoint 讀寫

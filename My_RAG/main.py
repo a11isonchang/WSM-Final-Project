@@ -1,7 +1,7 @@
 from tqdm import tqdm
 from utils import load_jsonl, save_jsonl
 from chunker import chunk_documents
-from retriever import create_retriever
+from retriever import create_retriever, analysis_retriever_result, kg_retriever
 from generator import generate_answer
 from config import load_config
 import argparse
@@ -93,7 +93,43 @@ def main(query_path, docs_path, language, output_path):
                 score = result.get("score", 0.0)
                 print(f"    #{idx} score={score:.4f} meta={meta} preview={preview}")
 
-        # 5. Generate Answer
+        # 5. 用analysis_retriever_result檢查retrieve結果
+        analysis_result = analysis_retriever_result(
+            query=query_text,
+            context_chunks=retrieved_chunks,
+            language=language
+        )
+        
+        # 如果檢索結果不夠充分，使用KG檢索補充
+        if analysis_result == "use_kg":
+            kg_chunks = kg_retriever(
+                query=query_text,
+                language=language,
+                all_chunks=chunks,
+                top_k=top_k
+            )
+            
+            # 合併原始檢索結果和KG檢索結果，去重（基於page_content）
+            # 重要：將KG檢索的chunks插入到前面，確保它們會被使用
+            if kg_chunks:
+                seen_content = {chunk.get("page_content", "") for chunk in retrieved_chunks}
+                new_kg_chunks = []
+                for kg_chunk in kg_chunks:
+                    kg_content = kg_chunk.get("page_content", "")
+                    if kg_content and kg_content not in seen_content:
+                        new_kg_chunks.append(kg_chunk)
+                        seen_content.add(kg_content)
+                
+                # 將KG檢索的chunks插入到前面，優先使用
+                if new_kg_chunks:
+                    retrieved_chunks = new_kg_chunks + retrieved_chunks
+                    if debug_retrieval:
+                        print(f"  [KG Retrieval] Added {len(new_kg_chunks)} chunks from knowledge graph (inserted at front)")
+        
+        if debug_retrieval:
+            print(f"  [Analysis Result] {analysis_result} | Final chunks: {len(retrieved_chunks)}")
+
+        # 6. Generate Answer
         # Use top 3 chunks for generation to provide better context
         answer = generate_answer(query_text, retrieved_chunks[:3], language)
 
