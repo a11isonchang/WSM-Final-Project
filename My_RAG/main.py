@@ -134,10 +134,6 @@ def main(query_path, docs_path, language, output_path):
         answer = generate_answer(query_text, retrieved_chunks[:3], language)
 
         query["prediction"]["content"] = answer
-        # Save top 3 chunks as references for evaluation
-        query["prediction"]["references"] = (
-            [chunk["page_content"] for chunk in retrieved_chunks[:3]] if retrieved_chunks else []
-        )
 
     save_jsonl(output_path, queries)
     print(f"Predictions saved at '{output_path}'")

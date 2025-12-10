@@ -1,6 +1,7 @@
 import json
 import os
 from typing import Dict, List, Any
+import csv
 
 def load_jsonl(file_path: str) -> List[Dict[str, Any]]:
     with open(file_path, 'r', encoding='utf-8') as file:
@@ -70,6 +71,10 @@ def process_folder(folder_path: str, output_file: str, metric_list: List[str]):
     
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
+    
+    # 【新增】另外輸出成 CSV
+    #  CSV 檔名：把 .json 換成 .csv（例如 final_result.json -> final_result.csv）
+    csv_output_file = output_file.replace('.json', '.csv')
         
     # Print Summary Table
     print("\n" + "="*80)

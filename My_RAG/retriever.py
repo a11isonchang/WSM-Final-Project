@@ -68,6 +68,7 @@ class BM25Retriever:
         ollama_host: str = "http://localhost:11434",
         keyword_file: str = None,
         dense_weight: float = 0.5, # Weight for dense retrieval score (0.0 to 1.0)
+        min_dense_similarity: float | None = None,
     ):
         self.chunks = chunks
         self.language = language
@@ -83,6 +84,7 @@ class BM25Retriever:
         self.keyword_extraction_method = keyword_extraction_method
         self.embedding_provider = embedding_provider
         self.dense_weight = dense_weight
+        self.min_dense_similarity = min_dense_similarity
         
         self.embedding_model = None
         self.ollama_client = None
@@ -384,6 +386,36 @@ class BM25Retriever:
                     # Query embedding is effectively zero, skip dense retrieval
                     dense_scores = np.zeros(len(self.chunks))
 
+        # === 🔴 2.5 Query–Chunk 類似度 Gate (Dense Similarity) ===
+        max_dense_score = None
+        if len(dense_scores) > 0:
+            try:
+                max_dense_score = float(np.max(dense_scores))
+            except Exception:
+                max_dense_score = None
+
+        # 只有在有 embedding 且設定了 gate 閾值時才啟動
+        if (
+            self.min_dense_similarity is not None
+            and max_dense_score is not None
+        ):
+            if max_dense_score < self.min_dense_similarity:
+                # 代表：連最好的 chunk 都太不相似 → 視為「無可用文件」
+                is_unsolvable = True
+
+                retrieval_debug = {
+                    "language": self.language,
+                    "top_k": top_k,
+                    "candidate_count": 0,
+                    "keyword_info": None,
+                    "kg_info": None,
+                    "kg_boost": self.kg_boost if self.kg_retriever else 0.0,
+                    "results": [],
+                    "unsolvable": is_unsolvable,
+                    "max_dense_score": max_dense_score,
+                }
+                return [], retrieval_debug
+
         # 3. Score Normalization (Min-Max)
         def normalize(scores):
             if np.max(scores) == np.min(scores):
@@ -498,6 +530,12 @@ def create_retriever(chunks, language, config=None):
         embedding_provider=config.get("embedding_provider", "local"),
         ollama_host=config.get("ollama_host", "http://ollama-gateway:11434"),
         keyword_file=config.get("keyword_file", "database/database.jsonl"),
+<<<<<<< HEAD
+=======
+        kg_retriever=kg_retriever,
+        kg_boost=kg_boost,
+        min_dense_similarity=config.get("min_dense_similarity"),
+>>>>>>> d4063a2bd530c92328e1f9f4259568738fe14f7f
     )
 
 def analysis_retriever_result(
