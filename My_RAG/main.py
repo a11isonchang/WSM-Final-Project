@@ -1,7 +1,7 @@
 from tqdm import tqdm
 from utils import load_jsonl, save_jsonl
 from chunker import chunk_documents
-from retriever import create_retriever
+from retriever import create_retriever, analysis_retriever_result, kg_retriever
 from generator import generate_answer
 from config import load_config
 import argparse
@@ -29,7 +29,16 @@ def main(query_path, docs_path, language, output_path):
     chunk_size = chunk_cfg["chunk_size"]
     chunk_overlap = chunk_cfg["chunk_overlap"]
 
-    top_k = retrieval_config.get("top_k", 3)
+    # Extract top_k based on language (can be a dict or a number)
+    top_k_config = retrieval_config.get("top_k", 3)
+    if isinstance(top_k_config, dict):
+        if language and language.startswith("zh"):
+            top_k = top_k_config.get("zh", 3)
+        else:
+            top_k = top_k_config.get("en", top_k_config.get(language, 3))
+    else:
+        top_k = top_k_config
+    
     debug_retrieval = retrieval_config.get("debug", False)
 
     # 1. Load Data
@@ -77,20 +86,6 @@ def main(query_path, docs_path, language, output_path):
                     f"  Keywords: {retrieval_debug['keyword_info']['keywords']} "
                     f"(boost={retrieval_debug['keyword_info']['boost']})"
                 )
-            
-            # 显示知识图谱检索信息
-            if retrieval_debug.get("kg_boost", 0) > 0:
-                kg_info = retrieval_debug.get("kg_info")
-                if kg_info:
-                    entities = kg_info.get("entities_found", [])
-                    doc_ids = kg_info.get("related_doc_ids", [])
-                    print(
-                        f"  KG: Found {len(entities)} entities, "
-                        f"{len(doc_ids)} related docs (boost={retrieval_debug['kg_boost']})"
-                    )
-                    if entities:
-                        entity_names = [e.get("name", "") for e in entities[:3]]
-                        print(f"    Entities: {', '.join(entity_names)}")
 
             for idx, result in enumerate(retrieval_debug["results"], start=1):
                 meta = result.get("metadata", {})
@@ -98,29 +93,45 @@ def main(query_path, docs_path, language, output_path):
                 score = result.get("score", 0.0)
                 print(f"    #{idx} score={score:.4f} meta={meta} preview={preview}")
 
-        # 5. Generate Answer
-        # 5. Generate Answer（加入「相似度 gate / unsolvable」邏輯）
-        is_unsolvable = retrieval_debug.get("unsolvable", False)
-        have_context = bool(retrieved_chunks)
+        # 5. 用analysis_retriever_result檢查retrieve結果
+        analysis_result = analysis_retriever_result(
+            query=query_text,
+            context_chunks=retrieved_chunks,
+            language=language
+        )
+        
+        # 如果檢索結果不夠充分，使用KG檢索補充
+        if analysis_result == "use_kg":
+            kg_chunks = kg_retriever(
+                query=query_text,
+                language=language,
+                all_chunks=chunks,
+                top_k=top_k
+            )
+            
+            # 合併原始檢索結果和KG檢索結果，去重（基於page_content）
+            # 重要：將KG檢索的chunks插入到前面，確保它們會被使用
+            if kg_chunks:
+                seen_content = {chunk.get("page_content", "") for chunk in retrieved_chunks}
+                new_kg_chunks = []
+                for kg_chunk in kg_chunks:
+                    kg_content = kg_chunk.get("page_content", "")
+                    if kg_content and kg_content not in seen_content:
+                        new_kg_chunks.append(kg_chunk)
+                        seen_content.add(kg_content)
+                
+                # 將KG檢索的chunks插入到前面，優先使用
+                if new_kg_chunks:
+                    retrieved_chunks = new_kg_chunks + retrieved_chunks
+                    if debug_retrieval:
+                        print(f"  [KG Retrieval] Added {len(new_kg_chunks)} chunks from knowledge graph (inserted at front)")
+        
+        if debug_retrieval:
+            print(f"  [Analysis Result] {analysis_result} | Final chunks: {len(retrieved_chunks)}")
 
-        if is_unsolvable or not have_context:
-            # 🔴 Gate 擋掉：完全不給 context，直接回固定答案
-            if language and language.startswith("zh"):
-                answer = "无法回答。"
-            else:
-                answer = "Unable to answer."
-
-            # 沒有用到任何文件，references 也留空
-            query["prediction"]["references"] = []
-        else:
-            # ✅ 正常流程：只用前 3 個 chunk 當 context 給 LLM
-            top_chunks = retrieved_chunks[:3]
-            answer = generate_answer(query_text, top_chunks, language)
-
-            # 把用到的 chunk 內容當作 reference 存起來（評分用）
-            query["prediction"]["references"] = [
-                chunk["page_content"] for chunk in top_chunks
-            ]
+        # 6. Generate Answer
+        # Use top 3 chunks for generation to provide better context
+        answer = generate_answer(query_text, retrieved_chunks[:3], language)
 
         query["prediction"]["content"] = answer
 

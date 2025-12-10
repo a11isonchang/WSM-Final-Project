@@ -12,10 +12,25 @@ from pathlib import Path
 from functools import lru_cache
 from typing import List, Dict, Any, Optional
 from ollama import Client
-
+from config import load_config
+from kg_retriever import create_kg_retriever
 
 EN_TOKEN_PATTERN = re.compile(r"[a-z0-9']+")
 ENGLISH_STOP_WORDS_SET = set(ENGLISH_STOP_WORDS)
+
+def load_ollama_config() -> dict:
+    """
+    讀取 config.yaml 內的 ollama 設定。
+    預期結構：
+    ollama:
+      host: http://127.0.0.1:11434
+      model: your-model-name
+    """
+    config = load_config()
+    assert "ollama" in config, "Ollama configuration not found in config file."
+    assert "host" in config["ollama"], "Ollama host not specified in config file."
+    assert "model" in config["ollama"], "Ollama model not specified in config file."
+    return config["ollama"]
 
 
 @lru_cache()
@@ -52,8 +67,6 @@ class BM25Retriever:
         embedding_provider: str = "local",
         ollama_host: str = "http://localhost:11434",
         keyword_file: str = None,
-        kg_retriever=None,
-        kg_boost: float = 0.0,
         dense_weight: float = 0.5, # Weight for dense retrieval score (0.0 to 1.0)
         min_dense_similarity: float | None = None,
     ):
@@ -64,10 +77,6 @@ class BM25Retriever:
         self.unsolvable_queries = set()
         if keyword_file:
             self._load_predefined_keywords(keyword_file)
-        
-        # 知识图谱检索器
-        self.kg_retriever = kg_retriever
-        self.kg_boost = max(0.0, kg_boost)
 
         self.min_keyword_characters = max(1, int(min_keyword_characters))
         self.candidate_multiplier = max(1.0, candidate_multiplier)
@@ -316,34 +325,6 @@ class BM25Retriever:
         text = chunk["page_content"]
         haystack = text if self.language == "zh" else text.lower()
         return sum(1 for kw in keywords if kw and kw in haystack)
-    
-    def _get_kg_boost_scores(self, query: str) -> Dict[int, float]:
-        """
-        使用知识图谱检索器获取doc_id的boost分数
-        
-        Returns:
-            Dict[doc_id, boost_score]
-        """
-        if not self.kg_retriever or self.kg_boost <= 0:
-            return {}
-        
-        try:
-            # 获取相关的doc_ids
-            related_doc_ids = self.kg_retriever.retrieve_doc_ids(query, top_k=20)
-            
-            # 构建doc_id到boost分数的映射
-            # 第一个doc_id得分最高，后续递减
-            boost_scores = {}
-            for rank, doc_id in enumerate(related_doc_ids):
-                # 排名越靠前，boost越高（使用指数衰减）
-                boost = self.kg_boost * (0.8 ** rank)
-                boost_scores[doc_id] = boost
-            
-            return boost_scores
-        except Exception as e:
-            # 如果KG检索失败，不影响正常检索
-            print(f"Warning: KG retrieval failed: {e}")
-            return {}
 
     def retrieve(self, query, top_k=5, query_id=None):
         is_unsolvable = False
@@ -368,16 +349,7 @@ class BM25Retriever:
         else:
             bm25_scores = np.array(self.bm25.get_scores(tokenized_query))
 
-        # Apply KG boost to BM25 scores before hybridization
-        bm25_scores = self.bm25.get_scores(tokenized_query)
-        
-        # 应用知识图谱boost
-        kg_boost_scores = self._get_kg_boost_scores(query)
-        if kg_boost_scores:
-            for idx, chunk in enumerate(self.chunks):
-                doc_id = chunk.get("metadata", {}).get("doc_id")
-                if doc_id is not None and doc_id in kg_boost_scores:
-                    bm25_scores[idx] += kg_boost_scores[doc_id]
+        bm25_scores = np.array(self.bm25.get_scores(tokenized_query))
 
         # 2. Dense Retrieval (Cosine Similarity)
         dense_scores = np.zeros(len(self.chunks))
@@ -517,305 +489,6 @@ class BM25Retriever:
         # 7. Final Selection
         selected = [self.chunks[idx] for idx in top_indices[:top_k]]
 
-        # 获取KG信息用于调试
-        kg_info = None
-        if self.kg_retriever and self.kg_boost > 0:
-            try:
-                kg_info = self.kg_retriever.get_entity_info(query)
-            except Exception:
-                pass
-        
-        retrieval_debug = {
-            "language": self.language,
-            "top_k": top_k,
-            "candidate_count": candidate_count,
-            "keyword_info": keyword_summary,
-            "kg_info": kg_info,
-            "kg_boost": self.kg_boost if self.kg_retriever else 0.0,
-            "results": [
-                {
-                    "metadata": selected_chunk.get("metadata", {}),
-                    "preview": selected_chunk.get("page_content", "")[:200],
-                    "score": float(hybrid_scores[top_indices[idx]]), # Show hybrid score (pre-boost) or boosted? Let's show hybrid for clarity of base relevance
-                }
-                for idx, selected_chunk in enumerate(selected)
-            ],
-            "unsolvable": is_unsolvable
-        }
-
-        return selected, retrieval_debug
-        p = Path(path)
-        if p.exists():
-            try:
-                with open(p, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        data = json.loads(line)
-                        content = data.get("content", "").strip()
-                        qid = data.get("query_id")
-                        keywords = data.get("keywords", [])
-                        unsolve = data.get("unsolve", 0)
-
-                        if unsolve == 1:
-                            if qid is not None:
-                                self.unsolvable_queries.add(str(qid))
-                            if content:
-                                self.unsolvable_queries.add(content)
-
-                        if keywords:
-                            kw_set = set(keywords)
-                            if content:
-                                self.predefined_keywords[content] = kw_set
-                            if qid is not None:
-                                self.predefined_keywords[str(qid)] = kw_set
-                print(f"Loaded keywords from {path}")
-            except Exception as e:
-                print(f"Error loading keywords from {path}: {e}")
-
-    def _tokenize(self, text: str):
-        if self.language == "zh":
-            tokens = [tok.strip() for tok in jieba.cut(text) if tok.strip()]
-            stop_words = self.chinese_stop_words
-            return [tok for tok in tokens if tok not in stop_words]
-
-        raw_tokens = EN_TOKEN_PATTERN.findall(text.lower())
-        filtered = [token for token in raw_tokens if token and token not in ENGLISH_STOP_WORDS_SET]
-        return [self._stem_english(token) for token in filtered]
-
-    def _stem_english(self, token: str) -> str:
-        return self.porter_stemmer.stem(token)
-
-    def _compute_embeddings(self, texts: List[str]) -> List[List[float]]:
-        if not texts:
-            return []
-            
-        if self.embedding_provider == "ollama":
-            # Ollama embed returns an object with .embeddings
-            # Note: Ollama client might not support batching natively in one call for large lists depending on version,
-            # but usually handles list input.
-            try:
-                response = self.ollama_client.embed(model=self.embedding_model, input=texts)
-                return response.embeddings
-            except Exception as e:
-                print(f"Ollama embedding error: {e}")
-                return []
-        else:
-            # SentenceTransformer returns ndarray or list of ndarrays
-            return self.embedding_model.encode(texts)
-
-    def _precompute_corpus_embeddings(self, texts: List[str], batch_size: int = 32):
-        all_embeddings = []
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
-            embeddings = self._compute_embeddings(batch)
-            if embeddings is not None and len(embeddings) > 0:
-                all_embeddings.extend(embeddings)
-            else:
-                # Fallback if embedding fails: use zero vectors
-                # Assuming dimension based on a test or default
-                dim = 384 # Default for all-minilm-l6-v2, will adapt if first batch succeeds
-                if all_embeddings:
-                    dim = len(all_embeddings[0])
-                all_embeddings.extend([[0.0] * dim] * len(batch))
-        return np.array(all_embeddings)
-
-    def _extract_keywords_semantic(self, query, top_k=5):
-        if not self.embedding_model:
-            return set()
-
-        if self.language == "zh":
-            tokens = [t for t in jieba.cut(query) if t.strip()]
-        else:
-            tokens = [t for t in query.split() if t.strip()]
-
-        candidates = set()
-        # Generate n-grams (1 to 4)
-        for n in range(1, 5):
-            for i in range(len(tokens) - n + 1):
-                ngram = "".join(tokens[i:i+n]) if self.language == "zh" else " ".join(tokens[i:i+n])
-                # Filter candidates: minimal length
-                if len(ngram.strip()) >= self.min_keyword_characters:
-                     candidates.add(ngram)
-        
-        candidates = list(candidates)
-        if not candidates:
-            return set()
-            
-        query_embedding = self._compute_embeddings([query])
-        candidate_embeddings = self._compute_embeddings(candidates)
-        
-        # Check if embeddings are valid
-        if not query_embedding or not candidate_embeddings:
-            return set()
-
-        # Manual cosine similarity for keywords as well (single query vs candidates)
-        # Normalize query
-        query_vec = np.array(query_embedding)
-        query_norm = np.linalg.norm(query_vec)
-        if query_norm > 1e-9:
-            query_vec = query_vec / query_norm
-        else:
-            return set() # Zero query vector
-
-        # Normalize candidates
-        cand_vecs = np.array(candidate_embeddings)
-        cand_norms = np.linalg.norm(cand_vecs, axis=1, keepdims=True)
-        # Avoid divide by zero
-        cand_vecs = np.divide(cand_vecs, cand_norms, where=cand_norms > 1e-9)
-        
-        # Dot product: (n_candidates, dim) @ (1, dim).T -> (n_candidates, 1)
-        # Note: query_vec is (1, dim)
-        distances = cand_vecs @ query_vec.T
-        
-        # Get top indices (flatten distances)
-        top_indices = distances.flatten().argsort()[-top_k:]
-        
-        keywords = {candidates[i] for i in top_indices}
-        return keywords
-
-    def _extract_keywords(self, tokens):
-        keywords = set()
-        for token in tokens:
-            normalized = token if self.language == "zh" else token.lower()
-            if len(normalized.strip()) >= self.min_keyword_characters:
-                keywords.add(normalized)
-        return keywords
-
-    def _keyword_overlap(self, chunk, keywords):
-        if not keywords:
-            return 0.0
-        text = chunk["page_content"]
-        haystack = text if self.language == "zh" else text.lower()
-        return sum(1 for kw in keywords if kw and kw in haystack)
-
-    def retrieve(self, query, top_k=5, query_id=None):
-        is_unsolvable = False
-        if (query_id is not None and str(query_id) in self.unsolvable_queries) or \
-           (query.strip() in self.unsolvable_queries):
-            is_unsolvable = True
-
-        if not self.chunks:
-            return [], {
-                "language": self.language,
-                "top_k": top_k,
-                "candidate_count": 0,
-                "keyword_info": None,
-                "results": [],
-                "unsolvable": is_unsolvable
-            }
-
-        # 1. Sparse Retrieval (BM25)
-        tokenized_query = self._tokenize(query)
-        if not tokenized_query:
-            bm25_scores = np.zeros(len(self.chunks))
-        else:
-            bm25_scores = np.array(self.bm25.get_scores(tokenized_query))
-
-        # 2. Dense Retrieval (Cosine Similarity)
-        dense_scores = np.zeros(len(self.chunks))
-        if self.chunk_embeddings is not None:
-            query_emb = self._compute_embeddings([query])
-            if query_emb is not None and len(query_emb) > 0:
-                # Check for zero vector to avoid RuntimeWarning
-                query_vec = np.array(query_emb).astype(np.float32)
-                query_norm = np.linalg.norm(query_vec)
-                
-                if query_norm > 1e-9:
-                    # Normalize query vector
-                    query_vec_norm = query_vec / query_norm
-                    
-                    try:
-                        # self.chunk_embeddings is numpy array of shape (n_chunks, dim)
-                        # query_vec_norm is (1, dim) or (dim,)
-                        
-                        # Reshape query if needed to (1, dim)
-                        if query_vec_norm.ndim == 1:
-                            query_vec_norm = query_vec_norm.reshape(1, -1)
-                            
-                        # Dot product
-                        raw_dense_scores = np.dot(self.chunk_embeddings, query_vec_norm.T).flatten()
-                        
-                        # Replace NaNs (from zero vectors in chunks) with 0.0
-                        dense_scores = np.nan_to_num(raw_dense_scores, nan=0.0)
-                    except Exception as e:
-                        print(f"Error in dense retrieval scoring: {e}")
-                        dense_scores = np.zeros(len(self.chunks))
-                else:
-                    # Query embedding is effectively zero, skip dense retrieval
-                    dense_scores = np.zeros(len(self.chunks))
-
-        # 3. Score Normalization (Min-Max)
-        def normalize(scores):
-            if np.max(scores) == np.min(scores):
-                return scores
-            return (scores - np.min(scores)) / (np.max(scores) - np.min(scores))
-
-        bm25_norm = normalize(bm25_scores)
-        dense_norm = normalize(dense_scores)
-
-        # 4. Hybrid Score
-        # If no embeddings, pure BM25. If no BM25 tokens, pure Dense (or 0).
-        hybrid_scores = (1 - self.dense_weight) * bm25_norm + self.dense_weight * dense_norm
-
-        # 5. Candidate Selection (based on Hybrid Score)
-        candidate_count = max(top_k, int(round(top_k * self.candidate_multiplier)))
-        candidate_count = min(candidate_count, len(self.chunks))
-        
-        # Get indices of top hybrid scores
-        top_indices = np.argsort(hybrid_scores)[::-1][:candidate_count]
-
-        # 6. Keyword Boosting
-        keyword_summary = None
-        if self.keyword_boost > 0:
-            predefined_source = "dynamic_simple"
-            keywords_to_use = set()
-
-            if query_id is not None and str(query_id) in self.predefined_keywords:
-                keywords_to_use = self.predefined_keywords[str(query_id)]
-                predefined_source = "query_id"
-            elif query.strip() in self.predefined_keywords:
-                keywords_to_use = self.predefined_keywords[query.strip()]
-                predefined_source = "query_text"
-            else:
-                if self.keyword_extraction_method == "semantic" and self.embedding_model:
-                     keywords_to_use = self._extract_keywords_semantic(query)
-                     predefined_source = "dynamic_semantic"
-                elif self.language == "zh":
-                    keywords_to_use = self._extract_keywords(tokenized_query)
-                else:
-                    raw_tokens = EN_TOKEN_PATTERN.findall(query.lower())
-                    keywords_to_use = {
-                        t for t in raw_tokens 
-                        if t not in ENGLISH_STOP_WORDS_SET 
-                        and len(t) >= self.min_keyword_characters
-                    }
-                if not keywords_to_use and predefined_source == "dynamic_simple":
-                     predefined_source = "dynamic_simple" # Kept same
-
-            keyword_summary = {
-                "keywords": sorted(list(keywords_to_use)),
-                "boost": self.keyword_boost,
-                "predefined_source": predefined_source,
-                "query_id_provided": query_id is not None,
-            }
-            
-            # Apply boost ONLY to the selected candidates
-            # We re-sort the top_indices based on (Hybrid Score + Boost)
-            # Note: hybrid_scores is array of all scores.
-            
-            boosted_scores = []
-            for idx in top_indices:
-                base_score = hybrid_scores[idx]
-                overlap = self._keyword_overlap(self.chunks[idx], keywords_to_use)
-                boosted_score = base_score + (self.keyword_boost * overlap)
-                boosted_scores.append((idx, boosted_score))
-            
-            # Sort by boosted score descending
-            boosted_scores.sort(key=lambda x: x[1], reverse=True)
-            top_indices = [x[0] for x in boosted_scores]
-
-        # 7. Final Selection
-        selected = [self.chunks[idx] for idx in top_indices[:top_k]]
-
         retrieval_debug = {
             "language": self.language,
             "top_k": top_k,
@@ -844,19 +517,6 @@ def create_retriever(chunks, language, config=None):
 
     bm25_cfg = config.get("bm25", {})
     
-    # 初始化知识图谱检索器（如果启用）
-    kg_retriever = None
-    kg_boost = config.get("kg_boost", 0.0)
-    if kg_boost > 0:
-        try:
-            from kg_retriever import create_kg_retriever
-            kg_path = config.get("kg_path", "My_RAG/kg_output.json")
-            kg_retriever = create_kg_retriever(kg_path, language)
-            print(f"KG retriever initialized with boost={kg_boost}")
-        except Exception as e:
-            print(f"Warning: Failed to initialize KG retriever: {e}")
-            kg_boost = 0.0
-    
     return BM25Retriever(
         chunks,
         language,
@@ -870,7 +530,171 @@ def create_retriever(chunks, language, config=None):
         embedding_provider=config.get("embedding_provider", "local"),
         ollama_host=config.get("ollama_host", "http://ollama-gateway:11434"),
         keyword_file=config.get("keyword_file", "database/database.jsonl"),
+<<<<<<< HEAD
+=======
         kg_retriever=kg_retriever,
         kg_boost=kg_boost,
         min_dense_similarity=config.get("min_dense_similarity"),
+>>>>>>> d4063a2bd530c92328e1f9f4259568738fe14f7f
     )
+
+def analysis_retriever_result(
+    query: str,
+    context_chunks: List[Dict[str, Any]],
+    language: str,
+) -> str:
+    """
+    透過llm根據queries、retrive到的文章，判斷夠不夠、準不準，不夠的話再用kg
+    
+    Returns:
+        "sufficient" 或 "use_kg"
+    """
+    if not context_chunks:
+        return "use_kg"
+    
+    # 構建context字符串
+    context_parts = []
+    for i, chunk in enumerate(context_chunks, start=1):
+        content = chunk.get("page_content", "").strip()
+        if content:
+            # 限制每個chunk的長度，避免prompt太長
+            if len(content) > 500:
+                content = content[:500] + "..."
+            context_parts.append(f"[Chunk {i}]\n{content}")
+    
+    context = "\n\n".join(context_parts)
+    
+    # 創建prompt
+    prompt = _create_prompt(query, context, language)
+    
+    try:
+        print("🐯 analysis! query:"+query)
+
+        cfg = load_ollama_config()
+        client = Client(host=cfg["host"])
+        response = client.generate(
+            model=cfg["model"],
+            prompt=prompt,
+            stream=False,
+            options={
+                "temperature": 0.1,
+                "num_ctx": 2048,
+            },
+        )
+        
+        result = (response.get("response", "") or "").strip().lower()
+        print("🐯 analysis! result:"+result)
+        
+        # 檢查結果
+        if "sufficient" in result:
+            return "sufficient"
+        elif "use_kg" in result or "kg" in result:
+            return "use_kg"
+        else:
+            # 默認返回use_kg，確保安全
+            return "use_kg"
+    except Exception as e:
+        print(f"Error in analysis_retriever_result: {e}")
+        # 遇到錯誤時默認使用KG，確保不會遺漏信息
+        return "use_kg"
+
+def _create_prompt(query: str, context: str, language: str) -> str:
+    """
+    analysis_retriever_result用的prompt
+    """
+    if language == "zh":
+        return f"""你是一个评估检索结果的助手。请根据以下【问题】和【检索到的内容】，判断这些内容是否足够且准确来回答问题。
+
+问题：
+{query}
+
+检索到的内容：
+{context}
+
+请评估：
+1. 这些内容是否足够回答这个问题？（是否包含回答问题所需的关键信息）
+2. 这些内容是否准确相关？（是否与问题直接相关，没有太多无关信息）
+
+请只输出以下两种标签之一：
+- "sufficient"：内容足够且准确，可以直接回答问题
+- "use_kg"：内容不够充分或不准确，需要使用知识图谱检索补充
+
+只输出标签，不要输出其他文字。"""
+    else:
+        return f"""You are an assistant evaluating retrieval results. Please judge whether the retrieved content is sufficient and accurate to answer the question.
+
+Question:
+{query}
+
+Retrieved Content:
+{context}
+
+Please evaluate:
+1. Is the content sufficient to answer this question? (Does it contain the key information needed?)
+2. Is the content accurate and relevant? (Is it directly related to the question without too much irrelevant information?)
+
+Please output only one of the following labels:
+- "sufficient": Content is sufficient and accurate, can directly answer the question
+- "use_kg": Content is insufficient or inaccurate, need to use knowledge graph retrieval to supplement
+
+Output only the label, no other text."""
+def kg_retriever(
+    query: str,
+    language: str,
+    all_chunks: List[Dict[str, Any]],
+    top_k: int = 5,
+) -> List[Dict[str, Any]]:
+    """
+    使用 My_RAG/kg_output.json 的三元組圖做 KG 檢索。
+
+    流程：
+    1. 用 KGRetriever 依 query 算出 KG-based doc 排序 (doc_id list)
+    2. 依 doc_id 到 all_chunks 裡撈出對應 chunks
+    3. 每個 doc 取 1~2 個代表 chunk，最後回傳最多 top_k 個 chunks
+    """
+    try:
+        kg_ret = create_kg_retriever(
+            kg_path="My_RAG/kg_output.json",
+            language=language,
+        )
+
+        print("🐯 kg! " + query)
+
+        # 1) 依 KG 拿到 doc_id 排序
+        doc_ids = kg_ret.retrieve_doc_ids(query, top_k=top_k * 3)  # 多取一些 doc 以備選
+        if not doc_ids:
+            return []
+
+        # 轉成 set 方便查
+        doc_id_set = set(doc_ids)
+
+        # 2) 先依 doc_id 在 all_chunks 裡聚 group
+        #    doc_id -> [chunks...]
+        doc_to_chunks: Dict[Any, List[Dict[str, Any]]] = {}
+        for chunk in all_chunks:
+            meta = chunk.get("metadata", {})
+            doc_id = meta.get("doc_id")
+            if doc_id in doc_id_set:
+                doc_to_chunks.setdefault(doc_id, []).append(chunk)
+
+        # 3) 按照 KG 排序的 doc_ids，對每個 doc 選 1~2 個代表 chunk
+        selected_chunks: List[Dict[str, Any]] = []
+        for doc_id in doc_ids:
+            chunks = doc_to_chunks.get(doc_id)
+            if not chunks:
+                continue
+
+            # 這裡可以做更聰明的挑選（例如選最長、包含最多關鍵詞的 chunk）
+            # 目前先簡單取前 2 個
+            for c in chunks[:2]:
+                selected_chunks.append(c)
+                if len(selected_chunks) >= top_k:
+                    break
+            if len(selected_chunks) >= top_k:
+                break
+
+        return selected_chunks[:top_k]
+
+    except Exception as e:
+        print(f"Error in kg_retriever: {e}")
+        return []
