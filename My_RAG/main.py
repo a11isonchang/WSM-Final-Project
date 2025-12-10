@@ -29,7 +29,15 @@ def main(query_path, docs_path, language, output_path):
     chunk_size = chunk_cfg["chunk_size"]
     chunk_overlap = chunk_cfg["chunk_overlap"]
 
-    top_k = retrieval_config.get("top_k", 3)
+    # 获取top_k（支持按语言配置）
+    top_k_config = retrieval_config.get("top_k", 3)
+    if isinstance(top_k_config, dict):
+        # 如果top_k是字典，根据语言获取对应的值
+        top_k = top_k_config.get(language, top_k_config.get("en", 3))
+    else:
+        # 如果top_k是数字，直接使用
+        top_k = top_k_config
+    
     debug_retrieval = retrieval_config.get("debug", False)
 
     # 1. Load Data
@@ -53,7 +61,7 @@ def main(query_path, docs_path, language, output_path):
 
     # 3. Create Retriever
     print("Creating retriever...")
-    retriever = create_retriever(chunks, language, retrieval_config)
+    retriever = create_retriever(chunks, language, retrieval_config, docs_path)
     print("Retriever created successfully.")
 
     # 4. Process Queries
@@ -78,12 +86,14 @@ def main(query_path, docs_path, language, output_path):
                     f"(boost={retrieval_debug['keyword_info']['boost']})"
                 )
             
-            # 显示知识图谱检索信息
+            # 显示知识图谱检索信息（包括多跳关系）
             if retrieval_debug.get("kg_boost", 0) > 0:
                 kg_info = retrieval_debug.get("kg_info")
                 if kg_info:
                     entities = kg_info.get("entities_found", [])
                     doc_ids = kg_info.get("related_doc_ids", [])
+                    multi_hop = kg_info.get("multi_hop", {})
+                    
                     print(
                         f"  KG: Found {len(entities)} entities, "
                         f"{len(doc_ids)} related docs (boost={retrieval_debug['kg_boost']})"
@@ -91,6 +101,16 @@ def main(query_path, docs_path, language, output_path):
                     if entities:
                         entity_names = [e.get("name", "") for e in entities[:3]]
                         print(f"    Entities: {', '.join(entity_names)}")
+                    
+                    # 显示多跳关系信息
+                    if multi_hop:
+                        max_hops = multi_hop.get("max_hops", 0)
+                        multi_hop_count = multi_hop.get("multi_hop_entities", 0)
+                        if multi_hop_count > 0:
+                            print(
+                                f"    Multi-hop: {multi_hop_count} entities found "
+                                f"through {max_hops}-hop relations"
+                            )
 
             for idx, result in enumerate(retrieval_debug["results"], start=1):
                 meta = result.get("metadata", {})

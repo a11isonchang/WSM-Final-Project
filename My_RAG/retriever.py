@@ -67,6 +67,9 @@ class BM25Retriever:
         # 知识图谱检索器
         self.kg_retriever = kg_retriever
         self.kg_boost = max(0.0, kg_boost)
+        
+        # 调试标志（可以通过config设置）
+        self._debug_kg = False  # 默认关闭，避免过多输出
 
         self.min_keyword_characters = max(1, int(min_keyword_characters))
         self.candidate_multiplier = max(1.0, candidate_multiplier)
@@ -84,7 +87,7 @@ class BM25Retriever:
         if self.embedding_provider == "ollama":
             try:
                 self.ollama_client = Client(host=ollama_host)
-                self.embedding_model = embedding_model_path
+                self.embedding_model = embedding_model_path 
                 print(f"Using Ollama embedding model: {self.embedding_model}")
             except Exception as e:
                 print(f"Failed to initialize Ollama client: {e}.")
@@ -317,31 +320,68 @@ class BM25Retriever:
     
     def _get_kg_boost_scores(self, query: str) -> Dict[int, float]:
         """
-        使用知识图谱检索器获取doc_id的boost分数
-        
-        Returns:
-            Dict[doc_id, boost_score]
+        使用知识图谱检索器获取 doc_id 的 boost 分数。
+        策略：
+        1. 优先使用 0-hop（直接关系）检索；
+        2. 如果完全找不到，再尝试多跳关系，但给更小的 boost。
         """
         if not self.kg_retriever or self.kg_boost <= 0:
             return {}
-        
+
         try:
-            # 获取相关的doc_ids
-            related_doc_ids = self.kg_retriever.retrieve_doc_ids(query, top_k=20)
-            
-            # 构建doc_id到boost分数的映射
-            # 第一个doc_id得分最高，后续递减
-            boost_scores = {}
+            # Step 1: 只用 0-hop（use_multi_hop=False）
+            related_doc_ids = self.kg_retriever.retrieve_doc_ids(
+                query,
+                top_k=20,
+                use_multi_hop=False,
+            )
+            used_multi_hop = False
+
+            # Step 2: 如果 0-hop 完全找不到，再退而求其次用多跳
+            if not related_doc_ids:
+                related_doc_ids = self.kg_retriever.retrieve_doc_ids(
+                    query,
+                    top_k=10,
+                    use_multi_hop=True,
+                )
+                used_multi_hop = True
+
+            if not related_doc_ids:
+                if getattr(self, "_debug_kg", False):
+                    print(f"[KG Debug] No related doc_ids found for query: {query[:50]}...")
+                return {}
+
+            boost_scores: Dict[int, float] = {}
+
+            # 對已經做過 min-max normalize 的 hybrid_scores，[0,1] 範圍：
+            # - 0-hop：max ~ 0.10-0.15
+            # - 多跳：max ~ 0.05-0.08（更保守）
+            if used_multi_hop:
+                base_boost = min(self.kg_boost * 0.03, 0.08)
+            else:
+                base_boost = min(self.kg_boost * 0.05, 0.15)
+
+            if base_boost <= 0:
+                return {}
+
             for rank, doc_id in enumerate(related_doc_ids):
-                # 排名越靠前，boost越高（使用指数衰减）
-                boost = self.kg_boost * (0.8 ** rank)
+                # 名次越後面，boost 越小
+                boost = base_boost * (0.85 ** rank)
                 boost_scores[doc_id] = boost
-            
+
+            if getattr(self, "_debug_kg", False):
+                print(
+                    f"[KG Debug] Found {len(related_doc_ids)} related docs, "
+                    f"used_multi_hop={used_multi_hop}, base_boost={base_boost:.4f}"
+                )
+
             return boost_scores
+
         except Exception as e:
-            # 如果KG检索失败，不影响正常检索
-            print(f"Warning: KG retrieval failed: {e}")
+            if getattr(self, "_debug_kg", False):
+                print(f"[KG Debug] Error in KG boost: {e}")
             return {}
+
 
     def retrieve(self, query, top_k=5, query_id=None):
         is_unsolvable = False
@@ -365,11 +405,8 @@ class BM25Retriever:
             bm25_scores = np.zeros(len(self.chunks))
         else:
             bm25_scores = np.array(self.bm25.get_scores(tokenized_query))
-
-        # Apply KG boost to BM25 scores before hybridization
-        bm25_scores = self.bm25.get_scores(tokenized_query)
         
-        # 应用知识图谱boost
+        # 应用知识图谱boost到BM25分数
         kg_boost_scores = self._get_kg_boost_scores(query)
         if kg_boost_scores:
             for idx, chunk in enumerate(self.chunks):
@@ -512,32 +549,6 @@ class BM25Retriever:
         }
 
         return selected, retrieval_debug
-        p = Path(path)
-        if p.exists():
-            try:
-                with open(p, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        data = json.loads(line)
-                        content = data.get("content", "").strip()
-                        qid = data.get("query_id")
-                        keywords = data.get("keywords", [])
-                        unsolve = data.get("unsolve", 0)
-
-                        if unsolve == 1:
-                            if qid is not None:
-                                self.unsolvable_queries.add(str(qid))
-                            if content:
-                                self.unsolvable_queries.add(content)
-
-                        if keywords:
-                            kw_set = set(keywords)
-                            if content:
-                                self.predefined_keywords[content] = kw_set
-                            if qid is not None:
-                                self.predefined_keywords[str(qid)] = kw_set
-                print(f"Loaded keywords from {path}")
-            except Exception as e:
-                print(f"Error loading keywords from {path}: {e}")
 
     def _tokenize(self, text: str):
         if self.language == "zh":
@@ -723,11 +734,43 @@ class BM25Retriever:
         # 4. Hybrid Score
         # If no embeddings, pure BM25. If no BM25 tokens, pure Dense (or 0).
         hybrid_scores = (1 - self.dense_weight) * bm25_norm + self.dense_weight * dense_norm
+        
+                # 5. 应用知识图谱boost到归一化后的hybrid分数（在归一化之后应用，效果更明显）
+        kg_boost_scores = self._get_kg_boost_scores(query)
+        boosted_count = 0
+        if kg_boost_scores:
+            for idx, chunk in enumerate(self.chunks):
+                doc_id = chunk.get("metadata", {}).get("doc_id")
+                if doc_id is None or doc_id not in kg_boost_scores:
+                    continue
 
-        # 5. Candidate Selection (based on Hybrid Score)
+                # 👉 只对「BM25 本来就有一点相关」的 chunk 做 boost
+                # 避免 KG 把原本完全不相关的 chunk 一路拉到前面来
+                if bm25_norm[idx] < 0.2:
+                    continue
+
+                old_score = hybrid_scores[idx]
+                hybrid_scores[idx] += kg_boost_scores[doc_id]
+                boosted_count += 1
+
+                if getattr(self, "_debug_kg", False) and boosted_count <= 3:
+                    print(
+                        f"[KG Debug] Chunk {idx} (doc_id={doc_id}) "
+                        f"score: {old_score:.4f} -> {hybrid_scores[idx]:.4f} "
+                        f"(boost={kg_boost_scores[doc_id]:.4f})"
+                    )
+
+        # 调试：显示KG boost应用情况
+        if getattr(self, "_debug_kg", False):
+            if boosted_count > 0:
+                print(f"[KG Debug] Applied KG boost to {boosted_count} chunks")
+            else:
+                print(f"[KG Debug] No chunks received KG boost (after BM25 threshold)")
+
+        # 6. Candidate Selection (based on Hybrid Score)
         candidate_count = max(top_k, int(round(top_k * self.candidate_multiplier)))
         candidate_count = min(candidate_count, len(self.chunks))
-        
+
         # Get indices of top hybrid scores
         top_indices = np.argsort(hybrid_scores)[::-1][:candidate_count]
 
@@ -784,11 +827,21 @@ class BM25Retriever:
         # 7. Final Selection
         selected = [self.chunks[idx] for idx in top_indices[:top_k]]
 
+        # 获取KG信息用于调试
+        kg_info = None
+        if self.kg_retriever and self.kg_boost > 0:
+            try:
+                kg_info = self.kg_retriever.get_entity_info(query, use_multi_hop=True)
+            except Exception:
+                pass
+
         retrieval_debug = {
             "language": self.language,
             "top_k": top_k,
             "candidate_count": candidate_count,
             "keyword_info": keyword_summary,
+            "kg_info": kg_info,
+            "kg_boost": self.kg_boost if self.kg_retriever else 0.0,
             "results": [
                 {
                     "metadata": selected_chunk.get("metadata", {}),
@@ -803,7 +856,7 @@ class BM25Retriever:
         return selected, retrieval_debug
 
 
-def create_retriever(chunks, language, config=None):
+def create_retriever(chunks, language, config=None, docs_path=None):
     """Creates a retriever from document chunks based on config."""
     config = config or {}
     retriever_type = config.get("type", "bm25").lower()
@@ -815,17 +868,27 @@ def create_retriever(chunks, language, config=None):
     # 初始化知识图谱检索器（如果启用）
     kg_retriever = None
     kg_boost = config.get("kg_boost", 0.0)
+    debug_kg = config.get("debug_kg", False)  # 是否启用KG调试输出
     if kg_boost > 0:
         try:
             from kg_retriever import create_kg_retriever
             kg_path = config.get("kg_path", "My_RAG/kg_output.json")
-            kg_retriever = create_kg_retriever(kg_path, language)
-            print(f"KG retriever initialized with boost={kg_boost}")
+            max_hops = config.get("kg_max_hops", 2)  # 默认2跳
+            # 使用传入的docs_path或配置中的路径
+            kg_docs_path = docs_path or config.get("docs_path", "dragonball_dataset/dragonball_docs.jsonl")
+            kg_retriever = create_kg_retriever(kg_path, language, max_hops, kg_docs_path)
+            print(f"✓ KG retriever initialized: boost={kg_boost}, max_hops={max_hops}, path={kg_path}")
+            if debug_kg:
+                print(f"  [KG Debug mode enabled]")
         except Exception as e:
-            print(f"Warning: Failed to initialize KG retriever: {e}")
+            print(f"✗ Warning: Failed to initialize KG retriever: {e}")
+            import traceback
+            traceback.print_exc()
             kg_boost = 0.0
+    else:
+        print(f"  KG retriever disabled (kg_boost={kg_boost})")
     
-    return BM25Retriever(
+    retriever = BM25Retriever(
         chunks,
         language,
         k1=bm25_cfg.get("k1", 1.5),
@@ -841,3 +904,8 @@ def create_retriever(chunks, language, config=None):
         kg_retriever=kg_retriever,
         kg_boost=kg_boost,
     )
+    
+    # 设置调试标志
+    retriever._debug_kg = debug_kg
+    
+    return retriever
