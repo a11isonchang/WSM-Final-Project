@@ -25,11 +25,6 @@ retrieval:
   embedding_model_path: "qwen3-embedding:0.6b"
   ollama_host: "http://ollama-gateway:11434"
 
-  # ===== Knowledge Graph Retrieval 設定 =====
-  kg_boost: 1.5  # 0 -> 關掉KG
-  kg_path: "My_RAG/kg_output.json"
-
-
   bm25:
     k1: 1.5
     b: 0.70

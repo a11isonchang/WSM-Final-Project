@@ -29,7 +29,16 @@ def main(query_path, docs_path, language, output_path):
     chunk_size = chunk_cfg["chunk_size"]
     chunk_overlap = chunk_cfg["chunk_overlap"]
 
-    top_k = retrieval_config.get("top_k", 3)
+    # Extract top_k based on language (can be a dict or a number)
+    top_k_config = retrieval_config.get("top_k", 3)
+    if isinstance(top_k_config, dict):
+        if language and language.startswith("zh"):
+            top_k = top_k_config.get("zh", 3)
+        else:
+            top_k = top_k_config.get("en", top_k_config.get(language, 3))
+    else:
+        top_k = top_k_config
+    
     debug_retrieval = retrieval_config.get("debug", False)
 
     # 1. Load Data
@@ -77,20 +86,6 @@ def main(query_path, docs_path, language, output_path):
                     f"  Keywords: {retrieval_debug['keyword_info']['keywords']} "
                     f"(boost={retrieval_debug['keyword_info']['boost']})"
                 )
-            
-            # 显示知识图谱检索信息
-            if retrieval_debug.get("kg_boost", 0) > 0:
-                kg_info = retrieval_debug.get("kg_info")
-                if kg_info:
-                    entities = kg_info.get("entities_found", [])
-                    doc_ids = kg_info.get("related_doc_ids", [])
-                    print(
-                        f"  KG: Found {len(entities)} entities, "
-                        f"{len(doc_ids)} related docs (boost={retrieval_debug['kg_boost']})"
-                    )
-                    if entities:
-                        entity_names = [e.get("name", "") for e in entities[:3]]
-                        print(f"    Entities: {', '.join(entity_names)}")
 
             for idx, result in enumerate(retrieval_debug["results"], start=1):
                 meta = result.get("metadata", {})
