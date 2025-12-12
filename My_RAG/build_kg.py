@@ -501,6 +501,33 @@ def merge_knowledge_graphs(kg_list: List[Dict[str, Any]]) -> Dict[str, Any]:
         "total_relation_types": len(relations_summary),
     }
 
+    # === 生成三元組 triple list (head, relation, tail, doc_id, ...) ===
+    id_to_entity = {e["id"]: e for e in all_entities if "id" in e}
+    triples: List[Dict[str, Any]] = []
+
+    for rel in all_relations:
+        src_id = rel.get("source")
+        tgt_id = rel.get("target")
+        rel_type = rel.get("type", "")
+        doc_id = rel.get("doc_id")
+
+        head_ent = id_to_entity.get(src_id, {})
+        tail_ent = id_to_entity.get(tgt_id, {})
+
+        triples.append(
+            {
+                "head": head_ent.get("name", src_id),
+                "head_id": src_id,
+                "head_type": head_ent.get("type", ""),
+                "relation": rel_type,
+                "tail": tail_ent.get("name", tgt_id),
+                "tail_id": tgt_id,
+                "tail_type": tail_ent.get("type", ""),
+                "doc_id": doc_id,
+                "properties": rel.get("properties", {}) or {},
+            }
+        )
+
     return {
         "entities": merged_entities,
         "relations": relations_summary,
@@ -509,7 +536,6 @@ def merge_knowledge_graphs(kg_list: List[Dict[str, Any]]) -> Dict[str, Any]:
         "doc_domains": doc_domains,
         "statistics": statistics,
     }
-
 
 # =========================
 # Checkpoint 機制

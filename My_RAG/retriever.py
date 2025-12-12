@@ -587,6 +587,105 @@ class BM25Retriever:
         return selected, retrieval_debug
 
 
+def analysis_retriever_result(query: str, context_chunks: List[Dict[str, Any]], language: str) -> str:
+    """
+    分析检索结果是否充分
+    
+    Args:
+        query: 查询文本
+        context_chunks: 检索到的chunks
+        language: 语言类型
+        
+    Returns:
+        "use_kg" 如果检索结果不够充分，否则返回 "ok"
+    """
+    # 如果检索到的chunks为空或太少，建议使用KG
+    if not context_chunks or len(context_chunks) < 2:
+        return "use_kg"
+    
+    # 检查chunks的内容是否与query相关
+    # 简单策略：如果所有chunks的内容都很短，可能不够充分
+    total_content_length = sum(len(chunk.get("page_content", "")) for chunk in context_chunks)
+    if total_content_length < 100:  # 如果总内容长度小于100字符，可能不够充分
+        return "use_kg"
+    
+    # 默认认为检索结果充分
+    return "ok"
+
+
+def kg_retriever(query: str, language: str, all_chunks: List[Dict[str, Any]], top_k: int = 5) -> List[Dict[str, Any]]:
+    """
+    使用知识图谱检索相关的chunks
+    
+    Args:
+        query: 查询文本
+        language: 语言类型
+        all_chunks: 所有可用的chunks
+        top_k: 返回的chunks数量
+        
+    Returns:
+        相关的chunks列表
+    """
+    try:
+        from kg_retriever import create_kg_retriever
+        
+        # 创建KG检索器
+        kg_path = "My_RAG/kg_output.json"
+        kg_ret = create_kg_retriever(kg_path, language)
+        
+        # 获取相关的doc_ids
+        related_doc_ids = kg_ret.retrieve_doc_ids(query, top_k=top_k * 2)  # 获取更多doc_ids以便筛选
+        
+        # 从all_chunks中找出对应的chunks
+        # 建立doc_id到chunks的映射
+        doc_id_to_chunks = {}
+        for chunk in all_chunks:
+            doc_id = chunk.get("metadata", {}).get("doc_id")
+            if doc_id is not None:
+                if doc_id not in doc_id_to_chunks:
+                    doc_id_to_chunks[doc_id] = []
+                doc_id_to_chunks[doc_id].append(chunk)
+        
+        # 收集相关的chunks
+        kg_chunks = []
+        seen_chunks = set()
+        
+        for doc_id in related_doc_ids:
+            if doc_id in doc_id_to_chunks:
+                for chunk in doc_id_to_chunks[doc_id]:
+                    # 使用page_content作为唯一标识去重
+                    content = chunk.get("page_content", "")
+                    if content and content not in seen_chunks:
+                        kg_chunks.append(chunk)
+                        seen_chunks.add(content)
+                        if len(kg_chunks) >= top_k:
+                            break
+            if len(kg_chunks) >= top_k:
+                break
+        
+        return kg_chunks[:top_k]
+        
+    except Exception as e:
+        print(f"Warning: KG retrieval failed: {e}")
+        return []
+
+
+def _ensure_float(value):
+    """Ensure a value is a float, handling dict/list cases."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    elif isinstance(value, dict):
+        # If it's a dict, try to get a numeric value or use default
+        return 3.0
+    elif isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return 3.0
+    else:
+        return 3.0
+
+
 def create_retriever(chunks, language, config=None, docs_path=None):
     """Creates a retriever from document chunks based on config."""
     config = config or {}
@@ -606,12 +705,9 @@ def create_retriever(chunks, language, config=None, docs_path=None):
     try:
         from kg_retriever import create_kg_retriever
 
-        max_hops = config.get("kg_max_hops", 2)
-        kg_docs_path = docs_path or config.get(
-            "docs_path", "dragonball_dataset/dragonball_docs.jsonl"
-        )
-        kg_retriever = create_kg_retriever(kg_path, language, max_hops, kg_docs_path)
-        print(f"✓ KG retriever initialized for ToG reasoning: max_hops={max_hops}, path={kg_path}")
+        # Note: create_kg_retriever only accepts kg_path and language
+        kg_retriever = create_kg_retriever(kg_path, language)
+        print(f"✓ KG retriever initialized for ToG reasoning: path={kg_path}")
         if debug_kg:
             print("  [KG Debug mode enabled]")
     except Exception as e:
@@ -625,7 +721,7 @@ def create_retriever(chunks, language, config=None, docs_path=None):
         language,
         k1=bm25_cfg.get("k1", 1.5),
         b=bm25_cfg.get("b", 0.75),
-        candidate_multiplier=config.get("candidate_multiplier", 3.0),
+        candidate_multiplier=_ensure_float(config.get("candidate_multiplier", 3.0)),
         keyword_boost=config.get("keyword_boost", 0.0),
         min_keyword_characters=config.get("min_keyword_characters", 3),
         keyword_extraction_method=config.get("keyword_extraction_method", "simple"),
