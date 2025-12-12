@@ -504,35 +504,7 @@ class BM25Retriever:
         # 4. Hybrid score
         hybrid_scores = (1 - self.dense_weight) * bm25_norm + self.dense_weight * dense_norm
 
-        # 5. Apply KG boost on hybrid_scores (after normalization)
-        kg_boost_scores = self._get_kg_boost_scores(query)
-        boosted_count = 0
-        if kg_boost_scores:
-            for idx, chunk in enumerate(self.chunks):
-                doc_id = chunk.get("metadata", {}).get("doc_id")
-                if doc_id is None or doc_id not in kg_boost_scores:
-                    continue
-
-                # 僅 boost 本來就略為相關的 chunk，避免硬拉無關文檔
-                if bm25_norm[idx] < 0.2:
-                    continue
-
-                old_score = hybrid_scores[idx]
-                hybrid_scores[idx] += kg_boost_scores[doc_id]
-                boosted_count += 1
-
-                if getattr(self, "_debug_kg", False) and boosted_count <= 3:
-                    print(
-                        f"[KG Debug] Chunk {idx} (doc_id={doc_id}) "
-                        f"score: {old_score:.4f} -> {hybrid_scores[idx]:.4f} "
-                        f"(boost={kg_boost_scores[doc_id]:.4f})"
-                    )
-
-        if getattr(self, "_debug_kg", False):
-            if boosted_count > 0:
-                print(f"[KG Debug] Applied KG boost to {boosted_count} chunks")
-            else:
-                print(f"[KG Debug] No chunks received KG boost (after BM25 threshold)")
+        # 5. KG boost removed - no longer applying KG boost to hybrid scores
 
         # 6. Candidate selection (by hybrid score)
         candidate_count = max(top_k, int(round(top_k * self.candidate_multiplier)))
@@ -624,31 +596,29 @@ def create_retriever(chunks, language, config=None, docs_path=None):
 
     bm25_cfg = config.get("bm25", {})
 
-    # KG retriever
+    # KG retriever (always initialize for ToG reasoning, even if boost is disabled)
     kg_retriever = None
-    kg_boost = config.get("kg_boost", 0.0)
+    kg_boost = config.get("kg_boost", 0.0)  # Keep for backward compatibility, but not used for boosting
     debug_kg = config.get("debug_kg", False)
-    if kg_boost > 0:
-        try:
-            from kg_retriever import create_kg_retriever
+    kg_path = config.get("kg_path", "My_RAG/kg_output.json")
+    
+    # Always try to initialize KG retriever for ToG reasoning
+    try:
+        from kg_retriever import create_kg_retriever
 
-            kg_path = config.get("kg_path", "My_RAG/kg_output.json")
-            max_hops = config.get("kg_max_hops", 2)
-            kg_docs_path = docs_path or config.get(
-                "docs_path", "dragonball_dataset/dragonball_docs.jsonl"
-            )
-            kg_retriever = create_kg_retriever(kg_path, language, max_hops, kg_docs_path)
-            print(f"✓ KG retriever initialized: boost={kg_boost}, max_hops={max_hops}, path={kg_path}")
-            if debug_kg:
-                print("  [KG Debug mode enabled]")
-        except Exception as e:
-            print(f"✗ Warning: Failed to initialize KG retriever: {e}")
-            import traceback
-
-            traceback.print_exc()
-            kg_boost = 0.0
-    else:
-        print(f"  KG retriever disabled (kg_boost={kg_boost})")
+        max_hops = config.get("kg_max_hops", 2)
+        kg_docs_path = docs_path or config.get(
+            "docs_path", "dragonball_dataset/dragonball_docs.jsonl"
+        )
+        kg_retriever = create_kg_retriever(kg_path, language, max_hops, kg_docs_path)
+        print(f"✓ KG retriever initialized for ToG reasoning: max_hops={max_hops}, path={kg_path}")
+        if debug_kg:
+            print("  [KG Debug mode enabled]")
+    except Exception as e:
+        print(f"✗ Warning: Failed to initialize KG retriever: {e}")
+        import traceback
+        traceback.print_exc()
+        kg_retriever = None
 
     retriever = BM25Retriever(
         chunks,

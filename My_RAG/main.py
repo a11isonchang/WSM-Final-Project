@@ -120,7 +120,9 @@ def main(query_path, docs_path, language, output_path):
 
         # 5. Generate Answer
         # Use top 3 chunks for generation to provide better context
-        answer = generate_answer(query_text, retrieved_chunks[:3], language)
+        # Pass kg_retriever for ToG fallback when evidence is insufficient
+        kg_retriever = getattr(retriever, 'kg_retriever', None)
+        answer = generate_answer(query_text, retrieved_chunks[:3], language, kg_retriever=kg_retriever)
 
         query["prediction"]["content"] = answer
 
