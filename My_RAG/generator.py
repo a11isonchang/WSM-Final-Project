@@ -228,6 +228,7 @@ You must follow these rules:
 6. For factual questions, answer with a short phrase or 1–2 concise sentences, focusing on the key value, date, or fact.
 7. For summary questions, give a brief, coherent summary (2–4 sentences) that covers the key events and conclusions in chronological or logical order.
 8. Do not show your reasoning steps; only output the final answer.
+9. Do NOT include any information not explicitly found in the retrieved context.
 
 Context:
 {context}
@@ -481,68 +482,52 @@ Answer in English:"""
     except Exception as e:
         return f"使用 ToG 推理時發生錯誤: {e}"
 
+# generator.py
 
-def generate_answer(
-    query: str,
-    context_chunks: List[Dict[str, Any]],
-    language: str = "en",
-    kg_retriever=None,
-) -> str:
-    """
-    主流程：
-    1. 使用 LLM 判斷檢索到的 chunks 是否足夠
-    2. 如果證據充足：使用 chunks 生成答案（原有流程）
-    3. 如果證據不足：使用 ToG 推理生成答案
-    """
-    # 判斷證據是否充足
+UNABLE_EN = "Unable to answer."
+UNABLE_ZH = "无法回答。"
+
+def generate_answer(query: str, context_chunks: List[Dict[str, Any]], language: str="en", kg_retriever=None) -> str:
     evidence_sufficient = _check_evidence_sufficiency(query, context_chunks, language)
-    
+
     if evidence_sufficient:
-        # 原有流程：使用 chunks 生成答案
         context_block = _build_context_block(query, context_chunks, language)
+        prompt = _create_prompt_zh(query, context_block) if language == "zh" else _create_prompt_en(query, context_block)
+        return _ollama_generate(prompt)
 
-        if language == "zh":
-            prompt = _create_prompt_zh(query, context_block)
-        else:
-            prompt = _create_prompt_en(query, context_block)
+    if kg_retriever:
+        extra_chunks = kg_retriever.retrieve_chunks_for_query(query, top_k=8)  # 你需要在 kg_retriever 實作這個接口（下面有 patch）
+        merged = (context_chunks or []) + (extra_chunks or [])
+        merged = _dedupe_chunks(merged)
 
-        try:
-            cfg = load_ollama_config()
-            client = Client(host=cfg["host"])
-            response = client.generate(
-                model=cfg["model"],
-                prompt=prompt,
-                stream=False,
-                options={
-                    # 低溫度：減少幻覺、盡量貼原文
-                    "temperature": 0.1,
-                    "num_ctx": 8192,
-                },
-            )
-            return (response.get("response", "") or "").strip()
-        except Exception as e:
-            return f"Error using Ollama client: {e}"
-    else:
-        # 證據不足：使用 ToG 推理
-        if kg_retriever:
-            return _generate_answer_from_tog(query, kg_retriever, language)
-        else:
-            # 如果沒有 kg_retriever，fallback 到原有流程
-            context_block = _build_context_block(query, context_chunks, language)
-            if language == "zh":
-                prompt = _create_prompt_zh(query, context_block)
-            else:
-                prompt = _create_prompt_en(query, context_block)
-            
-            try:
-                cfg = load_ollama_config()
-                client = Client(host=cfg["host"])
-                response = client.generate(
-                    model=cfg["model"],
-                    prompt=prompt,
-                    stream=False,
-                    options={"temperature": 0.1, "num_ctx": 8192},
-                )
-                return (response.get("response", "") or "").strip()
-            except Exception as e:
-                return f"Error using Ollama client: {e}"
+        if merged and _check_evidence_sufficiency(query, merged, language):
+            context_block = _build_context_block(query, merged, language)
+            prompt = _create_prompt_zh(query, context_block) if language == "zh" else _create_prompt_en(query, context_block)
+            return _ollama_generate(prompt)
+
+    return UNABLE_ZH if language == "zh" else UNABLE_EN
+
+
+def _ollama_generate(prompt: str) -> str:
+    cfg = load_ollama_config()
+    client = Client(host=cfg["host"])
+    resp = client.generate(
+        model=cfg["model"],
+        prompt=prompt,
+        stream=False,
+        options={"temperature": 0.0, "num_ctx": 8192},
+    )
+    return (resp.get("response","") or "").strip()
+
+
+def _dedupe_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    out = []
+    for ch in chunks:
+        meta = ch.get("metadata") or {}
+        key = (meta.get("doc_id"), (ch.get("page_content") or "")[:200])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(ch)
+    return out
