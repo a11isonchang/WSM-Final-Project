@@ -703,11 +703,19 @@ def create_retriever(chunks, language, config=None, docs_path=None):
     
     # Always try to initialize KG retriever for ToG reasoning
     try:
-        from kg_retriever import create_kg_retriever
+        from kg_retriever import KGRetriever
 
-        # Note: create_kg_retriever only accepts kg_path and language
-        kg_retriever = create_kg_retriever(kg_path, language)
-        print(f"✓ KG retriever initialized for ToG reasoning: path={kg_path}")
+        max_hops = config.get("kg_max_hops", 2)
+        kg_docs_path = docs_path or config.get(
+            "docs_path", "dragonball_dataset/dragonball_docs.jsonl"
+        )
+        kg_retriever = KGRetriever(
+            kg_path=kg_path,
+            language=language,
+            max_hops=max_hops,
+            docs_path=kg_docs_path,
+        )
+        print(f"✓ KG retriever initialized for ToG reasoning: max_hops={max_hops}, path={kg_path}")
         if debug_kg:
             print("  [KG Debug mode enabled]")
     except Exception as e:

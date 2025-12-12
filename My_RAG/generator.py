@@ -228,6 +228,11 @@ You must follow these rules:
 6. For factual questions, answer with a short phrase or 1–2 concise sentences, focusing on the key value, date, or fact.
 7. For summary questions, give a brief, coherent summary (2–4 sentences) that covers the key events and conclusions in chronological or logical order.
 8. Do not show your reasoning steps; only output the final answer.
+9. Do NOT include any information not explicitly found in the retrieved context.
+10.If the question is a factual question asking for a date/time/value/name,
+output ONLY the minimal answer span (e.g., "January 2021", "$5 million", "3 years"),
+without extra explanation.
+
 
 Context:
 {context}
@@ -285,6 +290,8 @@ def _create_prompt_zh(query: str, context: str) -> str:
 7. 若是总结性或多跳推理问题，请用 2–4 句简要总结关键经过和结论，可以按时间顺序或逻辑顺序组织。
 8. 只要上下文中有任何与问题相关的信息，你就应该尽量利用这些信息作答，不要自行发挥。
 9. 请使用简体中文作答，直接给出结论与必要说明，不要显示思考过程。
+10. 如果问题是要求提供日期/时间/数值/名称的事实性问题，则仅输出最小答案范围（例如，“2021年1月”、“500万美元”、“3年”），无需额外解释。
+
 
 上下文资料：
 {context}
@@ -546,3 +553,4 @@ def generate_answer(
                 return (response.get("response", "") or "").strip()
             except Exception as e:
                 return f"Error using Ollama client: {e}"
+                
