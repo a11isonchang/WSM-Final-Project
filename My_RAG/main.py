@@ -123,6 +123,24 @@ def main(query_path, docs_path, language, output_path):
         answer = generate_answer(query_text, retrieved_chunks[:3], language)
 
         query["prediction"]["content"] = answer
+
+        # ✅ NEW: output references like ground_truth.references (doc_id list)
+        refs = []
+        for ch in retrieved_chunks[:3]:
+            doc_id = (ch.get("metadata") or {}).get("doc_id")
+            if doc_id is not None:
+                refs.append(int(doc_id))
+
+        # de-dup while preserving order
+        seen = set()
+        refs_unique = []
+        for r in refs:
+            if r in seen:
+                continue
+            seen.add(r)
+            refs_unique.append(r)
+
+        query["prediction"]["references"] = refs_unique
         # Save top 3 chunks as references for evaluation
         query["prediction"]["references"] = (
             [chunk["page_content"] for chunk in retrieved_chunks[:3]] if retrieved_chunks else []

@@ -380,56 +380,67 @@ class BM25Retriever:
 
     def _get_kg_boost_scores(self, query: str) -> Dict[int, float]:
         """
-        使用知识图谱检索器获取 doc_id 的 boost 分数。
-        - 非多跳 query: 只用 0/1-hop
-        - 多跳 query: 開啟 multi-hop，但仍然限制規模
+        Triples-first KG boost:
+        - Ask KGRetriever to rank doc_ids with *scores* (0~1) and evidence.
+        - Convert those scores to small additive boosts on the hybrid scores.
+
+        Why:
+        - Rank-based decay (old) ignores how strongly a doc matches the query.
+        - Using KG scores tends to produce more accurate top chunks and more comparable references.
         """
         if not self.kg_retriever or self.kg_boost <= 0:
+            self._last_kg_ranked_docs = None
             return {}
 
         try:
             use_multi_hop = self._is_multi_hop_query(query)
-            related_doc_ids = self.kg_retriever.retrieve_doc_ids(
-                query,
-                top_k=50,  # 頂多拿 50 個 doc 作 boost 候選
+            ranked_docs = self.kg_retriever.rank_docs(
+                query=query,
+                top_k=50,  # keep small to avoid noisy boost
                 use_multi_hop=use_multi_hop,
+                return_debug=getattr(self, "_debug_kg", False),
             )
 
-            if not related_doc_ids:
+            self._last_kg_ranked_docs = ranked_docs  # for downstream debug / reference output
+
+            if not ranked_docs:
                 if getattr(self, "_debug_kg", False):
-                    print(f"[KG Debug] No doc_ids for query: {query[:80]}...")
+                    print(f"[KG Debug] No ranked docs for query: {query[:80]}...")
                 return {}
 
-            # 如果 KG 一次吐太多 doc，視為 noisy，直接忽略
-            if len(related_doc_ids) > 50:
+            # If KG returns too many docs, treat as noisy
+            if len(ranked_docs) > 50:
                 if getattr(self, "_debug_kg", False):
-                    print(
-                        f"[KG Debug] Too many KG docs ({len(related_doc_ids)}), "
-                        f"treat as noisy and ignore."
-                    )
+                    print(f"[KG Debug] Too many KG docs ({len(ranked_docs)}), ignore.")
                 return {}
+
+            # Convert KG relevance score -> additive boost
+            # Keep the boost small (otherwise it dominates dense/BM25).
+            # Typical: kg_boost=1.5 => max additive ~0.25
+            max_add = min(0.25, 0.15 + 0.07 * float(self.kg_boost))
+            min_add = 0.02
 
             boost_scores: Dict[int, float] = {}
-
-            base_boost = min(self.kg_boost * 0.1, 0.3)  # kg_boost=1.5 -> 0.15
-
-            for rank, doc_id in enumerate(related_doc_ids):
-                boost = base_boost * (0.85 ** rank)
-                boost_scores[doc_id] = boost
+            for d in ranked_docs:
+                doc_id = int(d["doc_id"])
+                s = float(d.get("score", 0.0))
+                # non-linear shaping: emphasize high-confidence docs
+                shaped = s ** 1.8
+                boost = min_add + shaped * (max_add - min_add)
+                boost_scores[doc_id] = float(boost)
 
             if getattr(self, "_debug_kg", False):
-                top3 = related_doc_ids[:3]
+                top3 = ranked_docs[:3]
                 print(
-                    f"[KG Debug] use_multi_hop={use_multi_hop}, docs={len(related_doc_ids)}, "
-                    f"top3={top3}, boosts={[boost_scores[d] for d in top3]}"
+                    f"[KG Debug] use_multi_hop={use_multi_hop}, docs={len(ranked_docs)}, "
+                    f"top3={[d['doc_id'] for d in top3]}, boosts={[boost_scores[int(d['doc_id'])] for d in top3]}"
                 )
 
             return boost_scores
+
         except Exception as e:
             print(f"Warning: KG retrieval failed: {e}")
-            import traceback
-
-            traceback.print_exc()
+            self._last_kg_ranked_docs = None
             return {}
 
     # ======================
