@@ -79,7 +79,7 @@ Output only one character: A, B, or C."""
             prompt=prompt,
             stream=False,
             options={
-                "temperature": 0.1,
+                "temperature": 0.0,
                 "num_ctx": 2048,
             },
         )
@@ -295,25 +295,176 @@ def _create_prompt_zh(query: str, context: str) -> str:
 回答（请用简体中文）：
 """
 
-def generate_answer(
+def _check_evidence_sufficiency(
     query: str,
     context_chunks: List[Dict[str, Any]],
-    language: str = "en",
-) -> str:
+    language: str,
+) -> bool:
     """
-    主流程：
-    1. 用 LLM 粗略過濾不相關的 chunk
-    2. 把剩下的 chunk + metadata 組成帶標註的 context
-    3. 依語言產生 prompt 丟給 Ollama
+    使用 LLM 判斷檢索到的 chunks 是否足夠回答問題。
+    
+    返回:
+        True: 證據充足，可以使用 chunks 生成答案
+        False: 證據不足或不相關，應該使用 ToG 推理
     """
-    context_block = _build_context_block(query, context_chunks, language)
-
+    if not context_chunks:
+        return False
+    
+    # 構建 chunks 摘要
+    chunks_summary = []
+    for i, ch in enumerate(context_chunks[:5], start=1):  # 只看前5個
+        text = (ch.get("page_content") or "").strip()
+        if text:
+            preview = text[:200] + "..." if len(text) > 200 else text
+            chunks_summary.append(f"Chunk {i}: {preview}")
+    
+    context_preview = "\n".join(chunks_summary)
+    
     if language == "zh":
-        prompt = _create_prompt_zh(query, context_block)
+        prompt = f"""你是一個問答系統的判斷模組。請評估檢索到的文檔片段是否足夠回答用戶的問題。
+
+問題：
+{query}
+
+檢索到的文檔片段（前幾個）：
+{context_preview}
+
+請判斷：
+- 如果這些片段包含足夠且相關的信息來回答問題，回答 "SUFFICIENT"
+- 如果這些片段證據不足、不相關、或無法回答問題，回答 "INSUFFICIENT"
+
+只回答一個詞：SUFFICIENT 或 INSUFFICIENT"""
     else:
-        prompt = _create_prompt_en(query, context_block)
+        prompt = f"""You are a judgment module for a Q&A system. Evaluate whether the retrieved document chunks are sufficient to answer the user's question.
+
+Question:
+{query}
+
+Retrieved document chunks (first few):
+{context_preview}
+
+Please judge:
+- If these chunks contain sufficient and relevant information to answer the question, respond "SUFFICIENT"
+- If these chunks are insufficient, irrelevant, or cannot answer the question, respond "INSUFFICIENT"
+
+Respond with only one word: SUFFICIENT or INSUFFICIENT"""
 
     try:
+        cfg = load_ollama_config()
+        client = Client(host=cfg["host"])
+        resp = client.generate(
+            model=cfg["model"],
+            prompt=prompt,
+            stream=False,
+            options={
+                "temperature": 0.0,
+                "num_ctx": 2048,
+            },
+        )
+        ans = (resp.get("response", "") or "").strip().upper()
+        return "SUFFICIENT" in ans
+    except Exception as e:
+        print(f"[WARN] Evidence check failed: {e}, defaulting to sufficient")
+        return True  # 預設為充足，避免過度使用 ToG
+
+
+def _generate_answer_from_tog(
+    query: str,
+    kg_retriever,
+    language: str,
+) -> str:
+    """
+    使用 ToG 推理結果生成答案。
+    
+    流程:
+    1. 使用 kg_retriever 進行 ToG 推理
+    2. 從推理路徑和證據構建 context
+    3. 使用 LLM 生成答案
+    """
+    if not kg_retriever:
+        return "無法使用知識圖譜推理（KG retriever 未初始化）"
+    
+    try:
+        # 進行 ToG 推理（總是使用 multi-hop）
+        ranked_docs = kg_retriever.rank_docs(
+            query=query,
+            top_k=10,
+            use_multi_hop=True,
+            return_debug=True,
+        )
+        
+        if not ranked_docs:
+            return "無法從知識圖譜中找到相關信息來回答此問題。"
+        
+        # 構建 ToG 推理結果的 context
+        tog_context_parts = []
+        for i, doc_result in enumerate(ranked_docs[:5], start=1):  # 取前5個
+            doc_id = doc_result.get("doc_id")
+            score = doc_result.get("score", 0.0)
+            paths = doc_result.get("paths", [])
+            evidence = doc_result.get("evidence_triples", [])
+            
+            if language == "zh":
+                tog_context_parts.append(f"### 推理結果 {i} (文檔 {doc_id}, 相關度: {score:.2f})")
+                
+                if paths:
+                    tog_context_parts.append("推理路徑：")
+                    for path in paths[:3]:  # 最多3條路徑
+                        tog_context_parts.append(f"  - {path}")
+                
+                if evidence:
+                    tog_context_parts.append("證據三元組：")
+                    for triple in evidence[:3]:  # 最多3個三元組
+                        head = triple.get("head", "")
+                        relation = triple.get("relation", "")
+                        tail = triple.get("tail", "")
+                        tog_context_parts.append(f"  - {head} --[{relation}]--> {tail}")
+            else:
+                tog_context_parts.append(f"### Reasoning Result {i} (Document {doc_id}, Relevance: {score:.2f})")
+                
+                if paths:
+                    tog_context_parts.append("Reasoning Paths:")
+                    for path in paths[:3]:  # Max 3 paths
+                        tog_context_parts.append(f"  - {path}")
+                
+                if evidence:
+                    tog_context_parts.append("Evidence Triples:")
+                    for triple in evidence[:3]:  # Max 3 triples
+                        head = triple.get("head", "")
+                        relation = triple.get("relation", "")
+                        tail = triple.get("tail", "")
+                        tog_context_parts.append(f"  - {head} --[{relation}]--> {tail}")
+            
+            tog_context_parts.append("")
+        
+        tog_context = "\n".join(tog_context_parts)
+        
+        # 構建 prompt
+        if language == "zh":
+            prompt = f"""你是一個基於知識圖譜推理的問答系統。請根據 ToG (Think-on-Graph) 推理結果回答問題。
+
+問題：
+{query}
+
+ToG 推理結果（包含推理路徑和證據三元組）：
+{tog_context}
+
+請根據這些推理路徑和證據，用簡潔的語言回答問題。如果推理結果不足以回答問題，請說明。
+
+回答（請用簡體中文）："""
+        else:
+            prompt = f"""You are a Q&A system based on knowledge graph reasoning. Answer the question based on ToG (Think-on-Graph) reasoning results.
+
+Question:
+{query}
+
+ToG reasoning results (including reasoning paths and evidence triples):
+{tog_context}
+
+Please answer the question concisely based on these reasoning paths and evidence. If the reasoning results are insufficient, please state so.
+
+Answer in English:"""
+        
         cfg = load_ollama_config()
         client = Client(host=cfg["host"])
         response = client.generate(
@@ -321,11 +472,77 @@ def generate_answer(
             prompt=prompt,
             stream=False,
             options={
-                # 低溫度：減少幻覺、盡量貼原文
                 "temperature": 0.1,
                 "num_ctx": 8192,
             },
         )
         return (response.get("response", "") or "").strip()
+        
     except Exception as e:
-        return f"Error using Ollama client: {e}"
+        return f"使用 ToG 推理時發生錯誤: {e}"
+
+
+def generate_answer(
+    query: str,
+    context_chunks: List[Dict[str, Any]],
+    language: str = "en",
+    kg_retriever=None,
+) -> str:
+    """
+    主流程：
+    1. 使用 LLM 判斷檢索到的 chunks 是否足夠
+    2. 如果證據充足：使用 chunks 生成答案（原有流程）
+    3. 如果證據不足：使用 ToG 推理生成答案
+    """
+    # 判斷證據是否充足
+    evidence_sufficient = _check_evidence_sufficiency(query, context_chunks, language)
+    
+    if evidence_sufficient:
+        # 原有流程：使用 chunks 生成答案
+        context_block = _build_context_block(query, context_chunks, language)
+
+        if language == "zh":
+            prompt = _create_prompt_zh(query, context_block)
+        else:
+            prompt = _create_prompt_en(query, context_block)
+
+        try:
+            cfg = load_ollama_config()
+            client = Client(host=cfg["host"])
+            response = client.generate(
+                model=cfg["model"],
+                prompt=prompt,
+                stream=False,
+                options={
+                    # 低溫度：減少幻覺、盡量貼原文
+                    "temperature": 0.1,
+                    "num_ctx": 8192,
+                },
+            )
+            return (response.get("response", "") or "").strip()
+        except Exception as e:
+            return f"Error using Ollama client: {e}"
+    else:
+        # 證據不足：使用 ToG 推理
+        if kg_retriever:
+            return _generate_answer_from_tog(query, kg_retriever, language)
+        else:
+            # 如果沒有 kg_retriever，fallback 到原有流程
+            context_block = _build_context_block(query, context_chunks, language)
+            if language == "zh":
+                prompt = _create_prompt_zh(query, context_block)
+            else:
+                prompt = _create_prompt_en(query, context_block)
+            
+            try:
+                cfg = load_ollama_config()
+                client = Client(host=cfg["host"])
+                response = client.generate(
+                    model=cfg["model"],
+                    prompt=prompt,
+                    stream=False,
+                    options={"temperature": 0.1, "num_ctx": 8192},
+                )
+                return (response.get("response", "") or "").strip()
+            except Exception as e:
+                return f"Error using Ollama client: {e}"

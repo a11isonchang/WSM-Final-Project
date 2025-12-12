@@ -1,7 +1,7 @@
 from tqdm import tqdm
 from utils import load_jsonl, save_jsonl
 from chunker import chunk_documents
-from retriever import create_retriever, analysis_retriever_result, kg_retriever
+from retriever import create_retriever
 from generator import generate_answer
 from config import load_config
 import argparse
@@ -29,14 +29,13 @@ def main(query_path, docs_path, language, output_path):
     chunk_size = chunk_cfg["chunk_size"]
     chunk_overlap = chunk_cfg["chunk_overlap"]
 
-    # Extract top_k based on language (can be a dict or a number)
+    # 获取top_k（支持按语言配置）
     top_k_config = retrieval_config.get("top_k", 3)
     if isinstance(top_k_config, dict):
-        if language and language.startswith("zh"):
-            top_k = top_k_config.get("zh", 3)
-        else:
-            top_k = top_k_config.get("en", top_k_config.get(language, 3))
+        # 如果top_k是字典，根据语言获取对应的值
+        top_k = top_k_config.get(language, top_k_config.get("en", 3))
     else:
+        # 如果top_k是数字，直接使用
         top_k = top_k_config
     
     debug_retrieval = retrieval_config.get("debug", False)
@@ -62,7 +61,7 @@ def main(query_path, docs_path, language, output_path):
 
     # 3. Create Retriever
     print("Creating retriever...")
-    retriever = create_retriever(chunks, language, retrieval_config)
+    retriever = create_retriever(chunks, language, retrieval_config, docs_path)
     print("Retriever created successfully.")
 
     # 4. Process Queries
@@ -86,6 +85,32 @@ def main(query_path, docs_path, language, output_path):
                     f"  Keywords: {retrieval_debug['keyword_info']['keywords']} "
                     f"(boost={retrieval_debug['keyword_info']['boost']})"
                 )
+            
+            # 显示知识图谱检索信息（包括多跳关系）
+            if retrieval_debug.get("kg_boost", 0) > 0:
+                kg_info = retrieval_debug.get("kg_info")
+                if kg_info:
+                    entities = kg_info.get("entities_found", [])
+                    doc_ids = kg_info.get("related_doc_ids", [])
+                    multi_hop = kg_info.get("multi_hop", {})
+                    
+                    print(
+                        f"  KG: Found {len(entities)} entities, "
+                        f"{len(doc_ids)} related docs (boost={retrieval_debug['kg_boost']})"
+                    )
+                    if entities:
+                        entity_names = [e.get("name", "") for e in entities[:3]]
+                        print(f"    Entities: {', '.join(entity_names)}")
+                    
+                    # 显示多跳关系信息
+                    if multi_hop:
+                        max_hops = multi_hop.get("max_hops", 0)
+                        multi_hop_count = multi_hop.get("multi_hop_entities", 0)
+                        if multi_hop_count > 0:
+                            print(
+                                f"    Multi-hop: {multi_hop_count} entities found "
+                                f"through {max_hops}-hop relations"
+                            )
 
             for idx, result in enumerate(retrieval_debug["results"], start=1):
                 meta = result.get("metadata", {})
@@ -93,47 +118,35 @@ def main(query_path, docs_path, language, output_path):
                 score = result.get("score", 0.0)
                 print(f"    #{idx} score={score:.4f} meta={meta} preview={preview}")
 
-        # 5. 用analysis_retriever_result檢查retrieve結果
-        analysis_result = analysis_retriever_result(
-            query=query_text,
-            context_chunks=retrieved_chunks,
-            language=language
-        )
-        
-        # 如果檢索結果不夠充分，使用KG檢索補充
-        if analysis_result == "use_kg":
-            kg_chunks = kg_retriever(
-                query=query_text,
-                language=language,
-                all_chunks=chunks,
-                top_k=top_k
-            )
-            
-            # 合併原始檢索結果和KG檢索結果，去重（基於page_content）
-            # 重要：將KG檢索的chunks插入到前面，確保它們會被使用
-            if kg_chunks:
-                seen_content = {chunk.get("page_content", "") for chunk in retrieved_chunks}
-                new_kg_chunks = []
-                for kg_chunk in kg_chunks:
-                    kg_content = kg_chunk.get("page_content", "")
-                    if kg_content and kg_content not in seen_content:
-                        new_kg_chunks.append(kg_chunk)
-                        seen_content.add(kg_content)
-                
-                # 將KG檢索的chunks插入到前面，優先使用
-                if new_kg_chunks:
-                    retrieved_chunks = new_kg_chunks + retrieved_chunks
-                    if debug_retrieval:
-                        print(f"  [KG Retrieval] Added {len(new_kg_chunks)} chunks from knowledge graph (inserted at front)")
-        
-        if debug_retrieval:
-            print(f"  [Analysis Result] {analysis_result} | Final chunks: {len(retrieved_chunks)}")
-
-        # 6. Generate Answer
+        # 5. Generate Answer
         # Use top 3 chunks for generation to provide better context
-        answer = generate_answer(query_text, retrieved_chunks[:3], language)
+        # Pass kg_retriever for ToG fallback when evidence is insufficient
+        kg_retriever = getattr(retriever, 'kg_retriever', None)
+        answer = generate_answer(query_text, retrieved_chunks[:3], language, kg_retriever=kg_retriever)
 
         query["prediction"]["content"] = answer
+
+        # ✅ NEW: output references like ground_truth.references (doc_id list)
+        refs = []
+        for ch in retrieved_chunks[:3]:
+            doc_id = (ch.get("metadata") or {}).get("doc_id")
+            if doc_id is not None:
+                refs.append(int(doc_id))
+
+        # de-dup while preserving order
+        seen = set()
+        refs_unique = []
+        for r in refs:
+            if r in seen:
+                continue
+            seen.add(r)
+            refs_unique.append(r)
+
+        query["prediction"]["references"] = refs_unique
+        # Save top 3 chunks as references for evaluation
+        query["prediction"]["references"] = (
+            [chunk["page_content"] for chunk in retrieved_chunks[:3]] if retrieved_chunks else []
+        )
 
     save_jsonl(output_path, queries)
     print(f"Predictions saved at '{output_path}'")
