@@ -1,32 +1,32 @@
 {
   "score_zh.jsonl": {
-    "Sentences_Precision": 0.0870706479871903,
-    "Sentences_Recall": 0.5132014606513722,
-    "Words_Precision": 0.17517064995960033,
-    "Words_Recall": 0.7250744934218164,
-    "ROUGELScore": 0.3940714537352565,
-    "completeness": 0.6481481481481481,
-    "hallucination": 0.05555555555555555,
-    "irrelevance": 0.2962962962962963,
-    "Words_F1": 0.2821715200923113,
-    "Sentences_F1": 0.14888175906834694,
-    "factual_score": 0.5925925925925926,
-    "Generation_Total_Score": 0.49333202316392455,
-    "Retrieval_Total_Score": 0.2155266395803291
+    "Sentences_Precision": 0.07387865275224649,
+    "Sentences_Recall": 0.24453349591353835,
+    "Words_Precision": 0.24178021835222646,
+    "Words_Recall": 0.5659018288830984,
+    "ROUGELScore": 0.38682199614691054,
+    "completeness": 0.5703703703703704,
+    "hallucination": 0.07407407407407407,
+    "irrelevance": 0.35555555555555557,
+    "Words_F1": 0.33880626224545773,
+    "Sentences_F1": 0.11347434641918523,
+    "factual_score": 0.49629629629629635,
+    "Generation_Total_Score": 0.4415591462216034,
+    "Retrieval_Total_Score": 0.2261403043323215
   },
   "score_en.jsonl": {
     "Sentences_Precision": 0.10334705523447338,
-    "Sentences_Recall": 0.4673393790303743,
+    "Sentences_Recall": 0.46733937903037426,
     "Words_Precision": 0.2180767364033454,
     "Words_Recall": 0.6399698390357169,
-    "ROUGELScore": 0.42272421044273434,
-    "completeness": 0.5083333333333334,
+    "ROUGELScore": 0.41389454405389864,
+    "completeness": 0.5016666666666667,
     "hallucination": 0.03333333333333333,
-    "irrelevance": 0.45833333333333337,
+    "irrelevance": 0.465,
     "Words_F1": 0.3253029331701937,
-    "Sentences_F1": 0.16926334925102526,
-    "factual_score": 0.4750000000000001,
-    "Generation_Total_Score": 0.4488621052213672,
-    "Retrieval_Total_Score": 0.2472831412106095
+    "Sentences_F1": 0.16926334925102524,
+    "factual_score": 0.4683333333333334,
+    "Generation_Total_Score": 0.44111393869361604,
+    "Retrieval_Total_Score": 0.24728314121060946
   }
 }

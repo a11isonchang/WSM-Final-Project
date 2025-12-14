@@ -8,10 +8,10 @@ retrieval:
   # ===== Chunking 設定（語言感知）=====
   chunking:
     zh:
-      chunk_size: 384        # char
+      chunk_size: 128        # char
       chunk_overlap: 64
     en:
-      chunk_size: 120        # words
+      chunk_size: 384        # words
       chunk_overlap: 20
 
   # ===== Retrieval 設定 =====
