@@ -119,8 +119,7 @@ def main(query_path, docs_path, language, output_path):
                 print(f"    #{idx} score={score:.4f} meta={meta} preview={preview}")
 
         # 5. Generate Answer
-        # Use top 3 chunks for generation to provide better context
-        # Pass kg_retriever for ToG fallback when evidence is insufficient
+        # All queries use ToG (Tree of Thoughts) reasoning via kg_retriever
         kg_retriever = getattr(retriever, 'kg_retriever', None)
         answer = generate_answer(query_text, retrieved_chunks[:3], language, kg_retriever=kg_retriever)
 
