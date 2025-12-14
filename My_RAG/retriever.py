@@ -53,7 +53,7 @@ class BM25Retriever:
         keyword_file: str = None,
         kg_retriever=None,
         kg_boost: float = 0.0,
-        dense_weight: float = 0.5,  # 0.0 ~ 1.0
+        dense_weight: float = 0.7,  # 0.0 ~ 1.0
     ):
         self.chunks = chunks
         self.language = language
@@ -106,7 +106,13 @@ class BM25Retriever:
                 try:
                     self.faiss_index = faiss.read_index(str(index_path))
 
-                    if isinstance(self.faiss_index, faiss.IndexFlat):
+                    # Check if it's a flat index (IndexFlatIP or IndexFlatL2)
+                    is_flat_index = (
+                        isinstance(self.faiss_index, faiss.IndexFlatIP) or
+                        isinstance(self.faiss_index, faiss.IndexFlatL2) or
+                        hasattr(self.faiss_index, 'reconstruct_n')
+                    )
+                    if is_flat_index:
                         ntotal = self.faiss_index.ntotal
                         if ntotal == len(self.corpus):
                             self.chunk_embeddings = self.faiss_index.reconstruct_n(0, ntotal)
@@ -703,26 +709,54 @@ def create_retriever(chunks, language, config=None, docs_path=None):
     
     # Always try to initialize KG retriever for ToG reasoning
     try:
-        from kg_retriever import KGRetriever
-
-        max_hops = config.get("kg_max_hops", 2)
-        kg_docs_path = docs_path or config.get(
-            "docs_path", "dragonball_dataset/dragonball_docs.jsonl"
-        )
-        kg_retriever = KGRetriever(
-            kg_path=kg_path,
-            language=language,
-            max_hops=max_hops,
-            docs_path=kg_docs_path,
-        )
-        print(f"✓ KG retriever initialized for ToG reasoning: max_hops={max_hops}, path={kg_path}")
-        if debug_kg:
-            print("  [KG Debug mode enabled]")
+        # Try to import create_kg_retriever function
+        try:
+            from kg_retriever import create_kg_retriever
+            max_hops = config.get("kg_max_hops", 2)
+            kg_docs_path = docs_path or config.get(
+                "docs_path", "dragonball_dataset/dragonball_docs.jsonl"
+            )
+            kg_retriever = create_kg_retriever(kg_path, language, max_hops, kg_docs_path)
+            print(f"✓ KG retriever initialized for ToG reasoning: max_hops={max_hops}, path={kg_path}")
+            if debug_kg:
+                print("  [KG Debug mode enabled]")
+        except ImportError:
+            # If create_kg_retriever doesn't exist, try KGRetriever class
+            try:
+                from kg_retriever import KGRetriever
+                max_hops = config.get("kg_max_hops", 2)
+                kg_docs_path = docs_path or config.get(
+                    "docs_path", "dragonball_dataset/dragonball_docs.jsonl"
+                )
+                kg_retriever = KGRetriever(
+                    kg_path=kg_path,
+                    language=language,
+                    max_hops=max_hops,
+                    docs_path=kg_docs_path,
+                )
+                print(f"✓ KG retriever initialized for ToG reasoning: max_hops={max_hops}, path={kg_path}")
+                if debug_kg:
+                    print("  [KG Debug mode enabled]")
+            except ImportError:
+                # KG retriever not available, continue without it
+                kg_retriever = None
+                print("✗ Warning: KG retriever module not available. Continuing without KG support.")
     except Exception as e:
         print(f"✗ Warning: Failed to initialize KG retriever: {e}")
-        import traceback
-        traceback.print_exc()
         kg_retriever = None
+
+    # Get dense_weight (support language-specific or global setting)
+    dense_weight_config = config.get("dense_weight", 0.5)
+    if isinstance(dense_weight_config, dict):
+        # If dense_weight is a dict, get language-specific value
+        # Handle language variants (e.g., "zh_CN" -> "zh")
+        lang_key = language if language in dense_weight_config else (
+            "zh" if language.startswith("zh") else "en"
+        )
+        dense_weight = dense_weight_config.get(lang_key, dense_weight_config.get("en", 0.5))
+    else:
+        # If dense_weight is a number, use it directly
+        dense_weight = dense_weight_config
 
     retriever = BM25Retriever(
         chunks,
@@ -739,7 +773,7 @@ def create_retriever(chunks, language, config=None, docs_path=None):
         keyword_file=config.get("keyword_file", "database/database.jsonl"),
         kg_retriever=kg_retriever,
         kg_boost=kg_boost,
-        dense_weight=config.get("dense_weight", 0.5),
+        dense_weight=dense_weight,
     )
 
     retriever._debug_kg = debug_kg
