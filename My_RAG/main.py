@@ -1,3 +1,9 @@
+import os
+
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 from tqdm import tqdm
 from utils import load_jsonl, save_jsonl
 from retriever import create_retriever
@@ -7,6 +13,7 @@ import argparse
 
 from chunker import get_query_aware_text_splitter
 
+from advanced_retriever import AdvancedHybridRetriever 
 
 def get_chunk_config(config: dict, language: str) -> dict:
     """
@@ -107,7 +114,7 @@ def main(query_path, docs_path, language, output_path):
 
         if key not in _chunks_cache:
             _chunks_cache[key] = build_chunks_for_key(splitter, qres)
-
+        '''
         if key not in _retriever_cache:
             #  retriever 綁定同一組 chunks
             _retriever_cache[key] = create_retriever(
@@ -116,6 +123,23 @@ def main(query_path, docs_path, language, output_path):
                 retrieval_config,
                 docs_path
             )
+        '''
+        if key not in _retriever_cache:
+            # 1. 先建立原本的基礎檢索器 (BM25/Vector)
+            base_retriever = create_retriever(
+                _chunks_cache[key],
+                language,
+                retrieval_config,
+                docs_path
+            )
+            
+            # 2. 用 AdvancedHybridRetriever 包裝它 (加入 KG 加權 + Cross-Encoder 重排序)
+            # 這會無縫接管後面的 .retrieve() 呼叫
+            _retriever_cache[key] = AdvancedHybridRetriever(
+                base_retriever,
+                kg_path="My_RAG/kg_output.json"  # 確保你的 KG 檔案路徑正確
+            )
+
 
         return _retriever_cache[key], qres, key
 
