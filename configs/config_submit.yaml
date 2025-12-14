@@ -32,7 +32,7 @@ retrieval:
   min_dense_similarity: 0.22   # cosine 相似度閾值（可之後調）
   
   # ===== Knowledge Graph Retrieval 設定 =====
-  kg_boost: 1.5  # 0 -> 關掉KG
+  kg_boost: 0
   kg_path: "My_RAG/kg_output.json"
 
 

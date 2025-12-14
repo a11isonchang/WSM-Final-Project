@@ -1,32 +1,32 @@
 {
   "score_zh.jsonl": {
     "Sentences_Precision": 0.0870706479871903,
-    "Sentences_Recall": 0.5132014606513721,
-    "Words_Precision": 0.1751706499596003,
+    "Sentences_Recall": 0.5132014606513722,
+    "Words_Precision": 0.17517064995960033,
     "Words_Recall": 0.7250744934218164,
-    "ROUGELScore": 0.42568373408357846,
+    "ROUGELScore": 0.3940714537352565,
     "completeness": 0.6481481481481481,
-    "hallucination": 0.16666666666666666,
-    "irrelevance": 0.18518518518518517,
-    "Words_F1": 0.2821715200923112,
+    "hallucination": 0.05555555555555555,
+    "irrelevance": 0.2962962962962963,
+    "Words_F1": 0.2821715200923113,
     "Sentences_F1": 0.14888175906834694,
-    "factual_score": 0.4814814814814815,
-    "Generation_Total_Score": 0.45358260778253,
-    "Retrieval_Total_Score": 0.21552663958032908
+    "factual_score": 0.5925925925925926,
+    "Generation_Total_Score": 0.49333202316392455,
+    "Retrieval_Total_Score": 0.2155266395803291
   },
   "score_en.jsonl": {
     "Sentences_Precision": 0.10334705523447338,
-    "Sentences_Recall": 0.46733937903037426,
+    "Sentences_Recall": 0.4673393790303743,
     "Words_Precision": 0.2180767364033454,
     "Words_Recall": 0.6399698390357169,
-    "ROUGELScore": 0.4231905480026252,
-    "completeness": 0.49833333333333324,
-    "hallucination": 0.06666666666666667,
-    "irrelevance": 0.43499999999999994,
+    "ROUGELScore": 0.42272421044273434,
+    "completeness": 0.5083333333333334,
+    "hallucination": 0.03333333333333333,
+    "irrelevance": 0.45833333333333337,
     "Words_F1": 0.3253029331701937,
-    "Sentences_F1": 0.16926334925102524,
-    "factual_score": 0.4316666666666666,
-    "Generation_Total_Score": 0.4274286073346459,
-    "Retrieval_Total_Score": 0.24728314121060946
+    "Sentences_F1": 0.16926334925102526,
+    "factual_score": 0.4750000000000001,
+    "Generation_Total_Score": 0.4488621052213672,
+    "Retrieval_Total_Score": 0.2472831412106095
   }
 }
