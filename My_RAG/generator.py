@@ -497,19 +497,22 @@ def generate_answer(
 ) -> str:
     """
     主流程：
-    所有查询都使用 ToG (Tree of Thoughts) 推理生成答案
+    1. 使用 LLM 判斷檢索到的 chunks 是否足夠
+    2. 如果證據充足：使用 chunks 生成答案（原有流程）
+    3. 如果證據不足：使用 ToG 推理生成答案
     """
-    # 直接使用 ToG 推理
-    if kg_retriever:
-        return _generate_answer_from_tog(query, kg_retriever, language)
-    else:
-        # 如果沒有 kg_retriever，fallback 到原有流程
+    # 判斷證據是否充足
+    evidence_sufficient = _check_evidence_sufficiency(query, context_chunks, language)
+    
+    if evidence_sufficient:
+        # 原有流程：使用 chunks 生成答案
         context_block = _build_context_block(query, context_chunks, language)
+
         if language == "zh":
             prompt = _create_prompt_zh(query, context_block)
         else:
             prompt = _create_prompt_en(query, context_block)
-        
+
         try:
             cfg = load_ollama_config()
             client = Client(host=cfg["host"])
@@ -517,9 +520,37 @@ def generate_answer(
                 model=cfg["model"],
                 prompt=prompt,
                 stream=False,
-                options={"temperature": 0.1, "num_ctx": 8192},
+                options={
+                    # 低溫度：減少幻覺、盡量貼原文
+                    "temperature": 0.1,
+                    "num_ctx": 8192,
+                },
             )
             return (response.get("response", "") or "").strip()
         except Exception as e:
             return f"Error using Ollama client: {e}"
+    else:
+        # 證據不足：使用 ToG 推理
+        if kg_retriever:
+            return _generate_answer_from_tog(query, kg_retriever, language)
+        else:
+            # 如果沒有 kg_retriever，fallback 到原有流程
+            context_block = _build_context_block(query, context_chunks, language)
+            if language == "zh":
+                prompt = _create_prompt_zh(query, context_block)
+            else:
+                prompt = _create_prompt_en(query, context_block)
+            
+            try:
+                cfg = load_ollama_config()
+                client = Client(host=cfg["host"])
+                response = client.generate(
+                    model=cfg["model"],
+                    prompt=prompt,
+                    stream=False,
+                    options={"temperature": 0.1, "num_ctx": 8192},
+                )
+                return (response.get("response", "") or "").strip()
+            except Exception as e:
+                return f"Error using Ollama client: {e}"
                 
