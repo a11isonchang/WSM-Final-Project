@@ -11,20 +11,7 @@ from pathlib import Path
 from functools import lru_cache
 from typing import List, Dict, Any, Optional
 from ollama import Client
-from pyserini.index.lucene import LuceneIndexer
-from pyserini.search.lucene import LuceneSearcher
-from pathlib import Path
-import json
-import os
-import hashlib
-from pathlib import Path
-import json
-import jieba
 
-try:
-    from sentence_transformers import CrossEncoder
-except Exception:
-    CrossEncoder = None
 
 EN_TOKEN_PATTERN = re.compile(r"[a-z0-9']+")
 ENGLISH_STOP_WORDS_SET = set(ENGLISH_STOP_WORDS)
@@ -44,59 +31,6 @@ def load_chinese_stop_words() -> set:
         with stop_file.open("r", encoding="utf-8") as f:
             stop_words = {line.strip() for line in f if line.strip()}
     return stop_words
-
-
-def _chunks_fingerprint(chunks: list) -> str:
-    h = hashlib.md5()
-    h.update(str(len(chunks)).encode("utf-8"))
-    # 抽樣幾段，避免成本太高
-    for i in (0, len(chunks)//2, max(0, len(chunks)-1)):
-        if 0 <= i < len(chunks):
-            h.update((chunks[i].get("page_content", "") or "")[:800].encode("utf-8", errors="ignore"))
-    return h.hexdigest()[:10]
-
-
-def _pretokenize_for_bm25(text: str, language: str) -> str:
-    """zh: jieba 切詞後用空白 join，讓 Lucene whitespace tokenization work。"""
-    text = text or ""
-    if language.startswith("zh"):
-        toks = [t.strip() for t in jieba.cut(text) if t.strip()]
-        return " ".join(toks)
-    return text
-
-import shutil
-from pyserini.index.lucene import LuceneIndexer
-from pyserini.search.lucene import LuceneSearcher
-
-def build_pyserini_index(chunks, index_dir: Path, language: str):
-    index_dir = Path(index_dir)
-    fp = _chunks_fingerprint(chunks)
-    meta_path = index_dir / "_corpus_fp.txt"
-
-    # reuse if possible
-    if index_dir.exists() and meta_path.exists():
-        if meta_path.read_text(encoding="utf-8").strip() == fp:
-            try:
-                _ = LuceneSearcher(str(index_dir))
-                return
-            except Exception:
-                pass
-
-    # force rebuild (乾淨刪掉整個資料夾最保險)
-    if index_dir.exists():
-        shutil.rmtree(index_dir, ignore_errors=True)
-    index_dir.mkdir(parents=True, exist_ok=True)
-
-    indexer = LuceneIndexer(index_dir=str(index_dir))
-
-    for i, chunk in enumerate(chunks):
-        text = chunk.get("page_content", "") or ""
-        if language.startswith("zh"):
-            text = " ".join(t.strip() for t in jieba.cut(text) if t.strip())
-        indexer.add_doc_dict({"id": str(i), "contents": text})  # ✅重點：用 add_doc_dict
-
-    indexer.close()
-    meta_path.write_text(fp, encoding="utf-8")
 
 
 class BM25Retriever:
@@ -120,14 +54,6 @@ class BM25Retriever:
         kg_retriever=None,
         kg_boost: float = 0.0,
         dense_weight: float = 0.7,  # 0.0 ~ 1.0
-        # ===== Rerank =====
-        rerank_enabled: bool = False,
-        rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
-        rerank_top_n: int = 50,
-        rerank_batch_size: int = 16,
-        rerank_weight: float = 1.0,   # 0~1: rerank 分數融合權重
-        rerank_device: str = None,
-
     ):
         self.chunks = chunks
         self.language = language
@@ -153,7 +79,6 @@ class BM25Retriever:
         self.ollama_client = None
         self.chunk_embeddings = None
         self.faiss_index = None
-        
 
         # ===== Embedding Model =====
         if self.embedding_provider == "ollama":
@@ -249,36 +174,8 @@ class BM25Retriever:
         # ===== BM25 =====
         self.porter_stemmer = PorterStemmer()
         self.chinese_stop_words = load_chinese_stop_words()
-        # ===== Pyserini BM25 =====
-        self.bm25_index_dir = Path("My_RAG/indices") / f"pyserini_bm25_{self.language}"
-        build_pyserini_index(self.chunks, self.bm25_index_dir, self.language)
-
-        self.bm25_searcher = LuceneSearcher(str(self.bm25_index_dir))
-        self.bm25_searcher.set_bm25(k1, b)
-
-        # ===== Reranker =====
-        self.rerank_enabled = bool(rerank_enabled)
-        self.rerank_model = rerank_model
-        self.rerank_top_n = int(rerank_top_n)
-        self.rerank_batch_size = int(rerank_batch_size)
-        self.rerank_weight = float(rerank_weight)
-        self.rerank_device = rerank_device
-
-        self.reranker = None
-        if self.rerank_enabled:
-            try:
-                self.reranker = CrossEncoderReranker(
-                    model_name=self.rerank_model,
-                    batch_size=self.rerank_batch_size,
-                    device=self.rerank_device,
-                )
-                print(f"✓ Reranker enabled: {self.rerank_model}")
-            except Exception as e:
-                print(f"✗ Warning: failed to init reranker ({self.rerank_model}): {e}")
-                self.reranker = None
-                self.rerank_enabled = False
-
-
+        self.tokenized_corpus = [self._tokenize(doc) for doc in self.corpus]
+        self.bm25 = BM25Okapi(self.tokenized_corpus, k1=k1, b=b)
 
     # ======================
     # Keyword file
@@ -558,7 +455,6 @@ class BM25Retriever:
 
     def retrieve(self, query: str, top_k: int = 5, query_id=None):
         is_unsolvable = False
-        tokenized_query = self._tokenize(query)
         if (query_id is not None and str(query_id) in self.unsolvable_queries) or (
             query.strip() in self.unsolvable_queries
         ):
@@ -575,22 +471,12 @@ class BM25Retriever:
                 "unsolvable": is_unsolvable,
             }
 
-        # 1. Sparse retrieval (Pyserini BM25)
-        bm25_scores = np.zeros(len(self.chunks), dtype=np.float32)
-
-        # we only need BM25 for candidates; don't retrieve all docs.
-        candidate_count = max(top_k, int(round(top_k * self.candidate_multiplier)))
-        candidate_count = min(candidate_count, len(self.chunks))
-
-        bm25_k = min(len(self.chunks), max(1000, candidate_count * 5))
-        bm25_k = min(len(self.chunks), 1000)  # 或 candidate_count*5
-        hits = self.bm25_searcher.search(query, k=bm25_k)
-
-        for h in hits:
-            doc_id = int(h.docid)
-            bm25_scores[doc_id] = float(h.score)
-
-
+        # 1. Sparse retrieval (BM25)
+        tokenized_query = self._tokenize(query)
+        if not tokenized_query:
+            bm25_scores = np.zeros(len(self.chunks))
+        else:
+            bm25_scores = np.array(self.bm25.get_scores(tokenized_query))
 
         # 2. Dense retrieval
         dense_scores = np.zeros(len(self.chunks))
@@ -675,47 +561,7 @@ class BM25Retriever:
             boosted_scores.sort(key=lambda x: x[1], reverse=True)
             top_indices = [x[0] for x in boosted_scores]
 
-                # 8. Rerank on candidates (optional)
-        rerank_info = None
-        if self.rerank_enabled and self.reranker is not None and len(top_indices) > 1:
-            rerank_n = min(len(top_indices), max(top_k, self.rerank_top_n))
-            cand_indices = list(top_indices[:rerank_n])
-            cand_texts = [self.chunks[i].get("page_content", "") or "" for i in cand_indices]
-
-            try:
-                rr_scores = np.array(self.reranker.rerank(query, cand_texts), dtype=np.float32)
-
-                # normalize rerank scores to 0~1
-                if rr_scores.max() != rr_scores.min():
-                    rr_norm = (rr_scores - rr_scores.min()) / (rr_scores.max() - rr_scores.min())
-                else:
-                    rr_norm = rr_scores
-
-                # fuse: final = (1-w)*hybrid + w*rerank
-                w = float(np.clip(self.rerank_weight, 0.0, 1.0))
-                fused = []
-                for local_rank, idx in enumerate(cand_indices):
-                    fused_score = (1 - w) * float(hybrid_scores[idx]) + w * float(rr_norm[local_rank])
-                    fused.append((idx, fused_score))
-
-                fused.sort(key=lambda x: x[1], reverse=True)
-
-                # keep order: fused first, then remaining
-                reranked = [i for i, _ in fused]
-                rest = [i for i in top_indices if i not in set(reranked)]
-                top_indices = reranked + rest
-
-                rerank_info = {
-                    "enabled": True,
-                    "model": self.rerank_model,
-                    "rerank_n": rerank_n,
-                    "weight": w,
-                    "top_rr": [float(rr_scores[i]) for i in np.argsort(-rr_scores)[:3]],
-                }
-            except Exception as e:
-                rerank_info = {"enabled": False, "error": str(e)}
-
-        # 9. Final selection
+        # 8. Final selection
         selected = [self.chunks[idx] for idx in top_indices[:top_k]]
 
         kg_info = None
@@ -742,26 +588,10 @@ class BM25Retriever:
                 for idx, selected_chunk in enumerate(selected)
             ],
             "unsolvable": is_unsolvable,
-            "rerank_info": rerank_info,
-
         }
 
         return selected, retrieval_debug
 
-class CrossEncoderReranker:
-    def __init__(self, model_name: str, batch_size: int = 16, device: str | None = None):
-        if CrossEncoder is None:
-            raise ImportError("CrossEncoder not available. Please install/upgrade sentence-transformers.")
-        self.model_name = model_name
-        self.batch_size = int(batch_size)
-        self.device = device
-        self.model = CrossEncoder(model_name, device=device)
-
-    def rerank(self, query: str, docs: list[str]) -> list[float]:
-        pairs = [(query, d) for d in docs]
-        scores = self.model.predict(pairs, batch_size=self.batch_size)
-        # scores: np.ndarray or list
-        return [float(s) for s in scores]
 
 def analysis_retriever_result(query: str, context_chunks: List[Dict[str, Any]], language: str) -> str:
     """
@@ -870,13 +700,6 @@ def create_retriever(chunks, language, config=None, docs_path=None):
         raise ValueError(f"Unsupported retriever type '{retriever_type}'.")
 
     bm25_cfg = config.get("bm25", {})
-    rerank_enabled=config.get("rerank_enabled", False),
-    rerank_model=config.get("rerank_model", "cross-encoder/ms-marco-MiniLM-L-6-v2"),
-    rerank_top_n=int(config.get("rerank_top_n", 50)),
-    rerank_batch_size=int(config.get("rerank_batch_size", 16)),
-    rerank_weight=float(config.get("rerank_weight", 1.0)),
-    rerank_device=config.get("rerank_device", None),
-
 
     # KG retriever (always initialize for ToG reasoning, even if boost is disabled)
     kg_retriever = None
