@@ -106,7 +106,13 @@ class BM25Retriever:
                 try:
                     self.faiss_index = faiss.read_index(str(index_path))
 
-                    if isinstance(self.faiss_index, faiss.IndexFlat):
+                    # Check if it's a flat index (IndexFlatIP or IndexFlatL2)
+                    is_flat_index = (
+                        isinstance(self.faiss_index, faiss.IndexFlatIP) or
+                        isinstance(self.faiss_index, faiss.IndexFlatL2) or
+                        hasattr(self.faiss_index, 'reconstruct_n')
+                    )
+                    if is_flat_index:
                         ntotal = self.faiss_index.ntotal
                         if ntotal == len(self.corpus):
                             self.chunk_embeddings = self.faiss_index.reconstruct_n(0, ntotal)
