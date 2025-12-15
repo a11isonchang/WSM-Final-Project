@@ -1,6 +1,6 @@
 import json
 import jieba
-# 引用新的 Reranker
+# 修正 1: 引用正確的類別名稱
 from rerank_model import GraphWeightedReranker
 
 class AdvancedHybridRetriever:
