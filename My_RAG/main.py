@@ -14,6 +14,7 @@ import argparse
 from chunker import get_query_aware_text_splitter
 
 from advanced_retriever import AdvancedHybridRetriever 
+from subq_engine import try_subquestion_retrieve
 
 def get_chunk_config(config: dict, language: str) -> dict:
     """
@@ -196,20 +197,55 @@ def main(query_path, docs_path, language, output_path):
                 score = result.get("score", 0.0)
                 print(f"    #{idx} score={score:.4f} meta={meta} preview={preview}")
 
+        # --- SubQuestionQueryEngine (pseudo evidence) ---
+        # 只在「多跳」或「證據偏薄」時啟用，避免每題都跑導致變慢或不穩
+        ctype = (qres.canonical_type or "").lower()
+        is_multi_hop = bool(getattr(qres, "is_multi_hop", False)) or any(k in ctype for k in ["multi", "hop", "compare", "caus", "reason"])
+
+        evidence_thin = (len(retrieved_chunks) < top_k)
+
+        # 你也可以更嚴格：top1/2 chunk 太短時算薄（可選）
+        # evidence_thin = evidence_thin or (retrieved_chunks and len(retrieved_chunks[0].get("page_content","")) < 120)
+
+        use_subq = is_multi_hop or evidence_thin
+
+        if use_subq:
+            ollama_cfg = config.get("ollama", {}) or {}
+            pseudo = try_subquestion_retrieve(
+                query=query_text,
+                chunks=retrieved_chunks,          # 用「已檢索到的 chunks」做子問題分解
+                language=language,
+                top_k=top_k,
+                ollama_host=ollama_cfg.get("host"),
+                llm_model=ollama_cfg.get("model"),
+            )
+
+            if pseudo:
+                # 把 pseudo evidence 放在前面（讓它更容易被你後面 [:3] 吃到）
+                retrieved_chunks = pseudo + retrieved_chunks
+
+                if debug_retrieval:
+                    print(f"[SubQ] enabled=True | multi_hop={is_multi_hop} thin={evidence_thin} | pseudo_chunks={len(pseudo)}")
+            else:
+                if debug_retrieval:
+                    print(f"[SubQ] enabled=True but pseudo=None | multi_hop={is_multi_hop} thin={evidence_thin}")
+
+
         # Generate
+        gen_k = 3
         kg_retriever = getattr(retriever, "kg_retriever", None)
-        answer = generate_answer(query_text, retrieved_chunks[:3], language, kg_retriever=kg_retriever)
+        answer = generate_answer(query_text, retrieved_chunks[:gen_k], language, kg_retriever=kg_retriever)
         query["prediction"]["content"] = answer
 
         #  references: 存 top-3 chunks 的文本
         query["prediction"]["references"] = (
-            [ch.get("page_content", "") for ch in retrieved_chunks[:3]]
+            [ch.get("page_content", "") for ch in retrieved_chunks[:gen_k]]
             if retrieved_chunks else []
         )
 
         # 存 doc_id 方便 debug
         query["prediction"]["reference_doc_ids"] = []
-        for ch in retrieved_chunks[:3]:
+        for ch in retrieved_chunks[:gen_k]:
             doc_id = (ch.get("metadata") or {}).get("doc_id")
             if doc_id is not None:
                 query["prediction"]["reference_doc_ids"].append(doc_id)

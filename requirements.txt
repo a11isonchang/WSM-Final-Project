@@ -20,3 +20,6 @@ langchain-community
 langchain-text-splitters
 langchain-core
 requests
+llama-index-core
+llama-index-llms-ollama
+llama-index-embeddings-ollama

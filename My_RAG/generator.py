@@ -4,6 +4,34 @@ from typing import List, Dict, Any
 from ollama import Client
 from config import load_config
 
+def _split_pseudo_chunks(context_chunks: List[Dict[str, Any]]):
+    pseudo, real = [], []
+    for ch in context_chunks or []:
+        meta = ch.get("metadata", {}) or {}
+        if meta.get("is_pseudo") is True:
+            pseudo.append(ch)
+        else:
+            real.append(ch)
+    return real, pseudo
+
+
+def _build_hint_block(pseudo_chunks: List[Dict[str, Any]], language: str) -> str:
+    """把 pseudo chunk 組成『提示草稿』區。注意：這不是證據，不會標 Source。"""
+    if not pseudo_chunks:
+        return ""
+    # 只取前 1~2 段提示，避免過長干擾
+    texts = []
+    for ch in pseudo_chunks[:2]:
+        t = (ch.get("page_content") or "").strip()
+        if t:
+            texts.append(t)
+    if not texts:
+        return ""
+
+    if language == "zh":
+        return "【提示草稿：仅用于定位答案方向，不能作为证据或引用】\n" + "\n\n".join(texts)
+    else:
+        return "[Draft hint: for guidance only; NOT evidence or a citable source]\n" + "\n\n".join(texts)
 
 def load_ollama_config() -> dict:
     """
@@ -180,7 +208,7 @@ def _build_context_block(
 
     return "\n\n".join(sections)
 
-def _create_prompt_en(query: str, context: str) -> str:
+def _create_prompt_en(query: str, context: str, hint: str = "") -> str:
     """
     英文任務說明：
     - 只用 context
@@ -210,28 +238,35 @@ Additional guidance for matching the right source:
 
 You must follow these rules:
 
-1. Use ONLY the information given in the Context section. Do not use outside knowledge.
-2. Pay careful attention to TIME:
+- Use ONLY the information given in the Context section. Do not use outside knowledge.
+- Pay careful attention to TIME:
    - Events inside one paragraph may have different months or dates.
    - Always use the specific date next to the event, not just a general year or section heading.
    - For questions asking "who earlier" or "which date is earlier/later", compare the exact dates in the context.
-3. Keep ENTITIES straight:
+- Keep ENTITIES straight:
    - Do not mix up different companies, courts, or patients.
    - When the question mentions a specific company / court / patient, use the matching label in the sources.
-4. For NUMBERS and COMPARISONS:
+- For NUMBERS and COMPARISONS:
    - Convert numbers to the same unit before comparing (for example, all in millions or in thousands).
    - For questions like "who has a higher value" or "who has more/less", clearly state which one is higher/lower and support it with the numbers.
-5. If the question clearly asks for something that does NOT appear anywhere in the context
+- If the question clearly asks for something that does NOT appear anywhere in the context
    (for example, favourite color, hobbies, or other unrelated personal details),
    answer exactly and only:
    "Unable to answer."
-6. For factual questions, answer with a short phrase or 1–2 concise sentences, focusing on the key value, date, or fact.
-7. For summary questions, give a brief, coherent summary (2–4 sentences) that covers the key events and conclusions in chronological or logical order.
-8. Do not show your reasoning steps; only output the final answer.
-9. Do NOT include any information not explicitly found in the retrieved context.
-10.If the question is a factual question asking for a date/time/value/name,
+- For factual questions, answer with a short phrase or 1–2 concise sentences, focusing on the key value, date, or fact.
+- For summary questions, give a brief, coherent summary (2–4 sentences) that covers the key events and conclusions in chronological or logical order.
+- Do not show your reasoning steps; only output the final answer.
+- Do NOT include any information not explicitly found in the retrieved context.
+- If the question is a factual question asking for a date/time/value/name,
 output ONLY the minimal answer span (e.g., "January 2021", "$5 million", "3 years"),
 without extra explanation.
+
+{hint}
+
+Hard rules:
+- You may ONLY output facts found in the Sources below.
+- If a "Draft hint" exists, it is guidance only and MUST NOT be treated as evidence.
+- If the answer is not found in the Sources, output exactly: "Unable to answer."
 
 
 Context:
@@ -243,7 +278,7 @@ Question:
 Answer in English:"""
 
 
-def _create_prompt_zh(query: str, context: str) -> str:
+def _create_prompt_zh(query: str, context: str, hint: str = "") -> str:
     """
     中文任務說明：
     - 只用 context
@@ -272,26 +307,31 @@ def _create_prompt_zh(query: str, context: str) -> str:
 
 请严格遵守以下规则：
 
-1. 回答必须完全依据“上下文资料”，不要使用任何外部常识或臆测。
-2. 特别注意时间信息：
+- 回答绝对必须完全依据“上下文资料”，不要使用任何外部常识或臆测。
+- 特别注意时间信息：
    - 同一段文字中可能出现不同月份或日期的子事件。
    - 回答时要依据事件旁边的具体日期，而不是只看段首的年份或大标题。
    - 如果问题在比较“谁更早入院”“哪一个时间更早/更晚”，请直接比较具体日期并给出结论。
-3. 核对实体：
+- 核对实体：
    - 不要把一家公司发生的事情说成是另一家公司。
    - 法院名称、患者姓名等也要对应正确，问题提到谁，就用标签里对应的那个人或单位。
-4. 进行数值或金额比较时：
+- 进行数值或金额比较时：
    - 先把数字换算成相同单位再比较，例如都换成“万元”或“亿元”。
    - 如果问题在问“谁的数值更高/更低”，请先指出各自的数值，再明确说明谁更高/更低。
-5. 如果问题明显询问的是上下文中完全没出现的信息
+- 如果问题明显询问的是上下文中完全没出现的信息
    （例如：喜欢的颜色、兴趣爱好等），请直接且只回答：
    “无法回答。”
-6. 若是简单事实性问题，请用一个短语或 1–2 句简洁的句子回答，集中给出关键数字、日期或结论。
-7. 若是总结性或多跳推理问题，请用 2–4 句简要总结关键经过和结论，可以按时间顺序或逻辑顺序组织。
-8. 只要上下文中有任何与问题相关的信息，你就应该尽量利用这些信息作答，不要自行发挥。
-9. 请使用简体中文作答，直接给出结论与必要说明，不要显示思考过程。
-10. 如果问题是要求提供日期/时间/数值/名称的事实性问题，则仅输出最小答案范围（例如，“2021年1月”、“500万美元”、“3年”），无需额外解释。
+- 若是简单事实性问题，请用一个短语或 1–2 句简洁的句子回答，集中给出关键数字、日期或结论。
+- 若是总结性或多跳推理问题，请用 2–4 句简要总结关键经过和结论，可以按时间顺序或逻辑顺序组织。
+- 只要上下文中有任何与问题相关的信息，你就应该尽量利用这些信息作答，不要自行发挥。
+- 请使用简体中文作答，直接给出结论与必要说明，不要显示思考过程。
+- 如果问题是要求提供日期/时间/数值/名称的事实性问题，则仅输出最小答案范围（例如，“2021年1月”、“500万美元”、“3年”），无需额外解释。
 
+{hint}
+重要规则（必须遵守）：
+- 你只能从下面“上下文资料（Source 1/2/3...）”中提取并输出事实。
+- 上面的“提示草稿”如果存在，只能帮助你决定去哪些 Source 寻找信息，不能直接当成事实写进答案。
+- 若上下文资料中找不到答案，输出：无法回答。
 
 上下文资料：
 {context}
@@ -379,6 +419,7 @@ def _generate_answer_from_tog(
     query: str,
     kg_retriever,
     language: str,
+    hint: str = ""
 ) -> str:
     """
     使用 ToG 推理結果生成答案。
@@ -453,6 +494,14 @@ def _generate_answer_from_tog(
 問題：
 {query}
 
+{hint}
+
+重要规则：
+- 你只能使用下面的 ToG 推理结果来回答。
+- 上面的提示草稿若存在，只用于指引，不可当作事实。
+- 若 ToG 结果仍不足以回答，请明确说“无法回答”。
+
+
 ToG 推理結果（包含推理路徑和證據三元組）：
 {tog_context}
 
@@ -501,17 +550,20 @@ def generate_answer(
     2. 如果證據充足：使用 chunks 生成答案（原有流程）
     3. 如果證據不足：使用 ToG 推理生成答案
     """
+    # --- split pseudo vs real chunks (pseudo 只當提示，不當證據) ---
+    real_chunks, pseudo_chunks = _split_pseudo_chunks(context_chunks)
+    hint_block = _build_hint_block(pseudo_chunks, language)
     # 判斷證據是否充足
-    evidence_sufficient = _check_evidence_sufficiency(query, context_chunks, language)
+    evidence_sufficient = _check_evidence_sufficiency(query, real_chunks, language)
     
     if evidence_sufficient:
         # 原有流程：使用 chunks 生成答案
-        context_block = _build_context_block(query, context_chunks, language)
+        context_block = _build_context_block(query, real_chunks, language)
 
         if language == "zh":
-            prompt = _create_prompt_zh(query, context_block)
+            prompt = _create_prompt_zh(query, context_block, hint=hint_block)
         else:
-            prompt = _create_prompt_en(query, context_block)
+            prompt = _create_prompt_en(query, context_block, hint=hint_block)
 
         try:
             cfg = load_ollama_config()
@@ -532,14 +584,14 @@ def generate_answer(
     else:
         # 證據不足：使用 ToG 推理
         if kg_retriever:
-            return _generate_answer_from_tog(query, kg_retriever, language)
+            return _generate_answer_from_tog(query, kg_retriever, language, hint=hint_block)
         else:
             # 如果沒有 kg_retriever，fallback 到原有流程
-            context_block = _build_context_block(query, context_chunks, language)
+            context_block = _build_context_block(query, real_chunks, language)
             if language == "zh":
-                prompt = _create_prompt_zh(query, context_block)
+                prompt = _create_prompt_zh(query, context_block, hint=hint_block)
             else:
-                prompt = _create_prompt_en(query, context_block)
+                prompt = _create_prompt_en(query, context_block, hint=hint_block)
             
             try:
                 cfg = load_ollama_config()
