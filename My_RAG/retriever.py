@@ -54,12 +54,18 @@ class BM25Retriever:
         kg_retriever=None,
         kg_boost: float = 0.0,
         dense_weight: float = 0.7,  # 0.0 ~ 1.0
+        domain_centroids_path: Optional[str] = None,
+        db_embeddings_path: str = "database/database_with_embeddings.jsonl",
+        debug: bool = False,
     ):
         self.chunks = chunks
         self.language = language
         self.corpus = [chunk.get("page_content", "") for chunk in chunks]
+        self.chunk_domains = [chunk.get("metadata", {}).get("domain") for chunk in chunks]
         self.predefined_keywords: Dict[str, set] = {}
         self.unsolvable_queries: set = set()
+        self._llm_cache = {}
+        self.debug = debug
         if keyword_file:
             self._load_predefined_keywords(keyword_file)
 
@@ -79,6 +85,13 @@ class BM25Retriever:
         self.ollama_client = None
         self.chunk_embeddings = None
         self.faiss_index = None
+        self.domain_centroids = self._load_domain_centroids(domain_centroids_path) if domain_centroids_path else None
+
+        # Load database embeddings for few-shot
+        self.db_entries = []
+        self.db_embeddings = None
+        if db_embeddings_path and Path(db_embeddings_path).exists():
+            self._load_db_embeddings(db_embeddings_path)
 
         # ===== Embedding Model =====
         if self.embedding_provider == "ollama":
@@ -318,6 +331,56 @@ class BM25Retriever:
         haystack = text if self.language == "zh" else text.lower()
         return sum(1 for kw in keywords if kw and kw in haystack)
 
+    def _load_domain_centroids(self, path: str) -> Optional[Dict[str, np.ndarray]]:
+        p = Path(path)
+        if not p.exists():
+            print(f"Domain centroid file not found at {p}. Skipping domain filtering.")
+            return None
+        try:
+            data = np.load(p, allow_pickle=True).item()
+            if not isinstance(data, dict):
+                print(f"Invalid centroid file format at {p}.")
+                return None
+            return {k: np.array(v, dtype=np.float32) for k, v in data.items()}
+        except Exception as e:
+            print(f"Error loading domain centroids from {p}: {e}")
+            return None
+
+    def _classify_domain(self, query: str) -> Optional[str]:
+        """Classify query to a domain using precomputed centroids."""
+        if not self.domain_centroids or not self.embedding_model:
+            return None
+
+        query_emb = self._compute_embeddings([query])
+        if not query_emb:
+            return None
+
+        vec = np.array(query_emb, dtype=np.float32)
+        if vec.ndim > 1:
+            vec = vec[0]
+        norm = np.linalg.norm(vec)
+        if norm > 1e-9:
+            vec = vec / norm
+        else:
+            return None
+
+        best_domain = None
+        best_score = -1.0
+        for domain, centroid in self.domain_centroids.items():
+            if centroid is None:
+                continue
+            c = np.array(centroid, dtype=np.float32)
+            if c.ndim > 1:
+                c = c.reshape(-1)
+            c_norm = np.linalg.norm(c)
+            if c_norm > 1e-9:
+                c = c / c_norm
+            score = float(np.dot(vec, c))
+            if score > best_score:
+                best_score = score
+                best_domain = domain
+        return best_domain
+
     # ======================
     # KG: multi-hop 判斷 + boost
     # ======================
@@ -449,6 +512,113 @@ class BM25Retriever:
             self._last_kg_ranked_docs = None
             return {}
 
+    def _load_db_embeddings(self, path):
+        try:
+            embeddings = []
+            self.db_entries = []
+            with open(path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    entry = json.loads(line)
+                    if "embedding" in entry and entry["embedding"]:
+                        self.db_entries.append(entry)
+                        embeddings.append(entry["embedding"])
+            if embeddings:
+                self.db_embeddings = np.array(embeddings).astype(np.float32)
+                # Normalize for cosine similarity
+                norms = np.linalg.norm(self.db_embeddings, axis=1, keepdims=True)
+                self.db_embeddings = self.db_embeddings / np.maximum(norms, 1e-9)
+                print(f"Loaded {len(embeddings)} database embeddings for few-shot learning.")
+        except Exception as e:
+            print(f"Error loading database embeddings: {e}")
+
+    def _extract_keywords_llm(self, query: str) -> List[str]:
+        if not self.ollama_client:
+            return []
+
+        example_text = ""
+        if self.db_embeddings is not None and len(self.db_entries) > 0:
+            query_emb = self._compute_embeddings([query])
+            if query_emb and len(query_emb) > 0:
+                q_vec = np.array(query_emb[0]).astype(np.float32)
+                q_norm = np.linalg.norm(q_vec)
+                q_vec = q_vec / max(q_norm, 1e-9)
+                
+                if self.db_embeddings.shape[1] == q_vec.shape[0]:
+                    scores = np.dot(self.db_embeddings, q_vec)
+                    best_idx = np.argmax(scores)
+                    best_entry = self.db_entries[best_idx]
+                    
+                    if self.debug:
+                        print(f"DEBUG: Selected Few-Shot Example: {best_entry.get('content', '')}")
+                        print(f"DEBUG: Example Keywords: {best_entry.get('keywords', [])}")
+
+                    example_text = (
+                        "Example:\n"
+                        f"Query: {best_entry.get('content', '')}\n"
+                        f"Keywords: {json.dumps(best_entry.get('keywords', []), ensure_ascii=False)}\n\n"
+                    )
+
+        prompt = (
+            "Extract strictly key entities and nouns from the user's query. "
+            "Return ONLY a JSON list of strings.\n\n"
+            f"{example_text}"
+            "Task:\n"
+            f"Query: {query}\n"
+            "Keywords:"
+        )
+        
+        try:
+            response = self.ollama_client.generate(
+                model="granite4:3b",
+                prompt=prompt,
+            )
+            
+            if hasattr(response, 'response'):
+                text = response.response
+            elif isinstance(response, dict):
+                text = response.get("response", "")
+            else:
+                text = str(response)
+                
+            if not text:
+                return []
+            
+            if self.debug:
+                print(f"DEBUG: LLM Response: {text}")
+
+            # import json # Removed to fix UnboundLocalError
+            start = text.find("[")
+            end = text.rfind("]")
+            
+            keywords = []
+            parsed_successfully = False
+            
+            # Attempt 1: Parse JSON
+            if start != -1 and end != -1 and end > start:
+                try:
+                    parsed = json.loads(text[start : end + 1])
+                    if isinstance(parsed, list):
+                        keywords = [str(x).strip() for x in parsed if str(x).strip()]
+                        parsed_successfully = True
+                except json.JSONDecodeError:
+                    pass
+            
+            # Attempt 2: Fallback (cleanup string)
+            if not parsed_successfully:
+                clean_text = text.replace("[", "").replace("]", "").replace('"', "").replace("'", "").replace("\n", " ")
+                parts = clean_text.split(",")
+                keywords = [p.strip() for p in parts if p.strip()]
+            
+            if keywords:
+                self._llm_cache[query] = keywords
+                return keywords
+                
+        except Exception as e:
+            print(f"LLM keyword extraction failed: {e}")
+            
+        self._llm_cache[query] = []
+        return []
+
     # ======================
     # Main retrieve
     # ======================
@@ -472,13 +642,31 @@ class BM25Retriever:
             }
 
         # 1. Sparse retrieval (BM25)
-        tokenized_query = self._tokenize(query)
+        llm_keywords = self._extract_keywords_llm(query)
+        if llm_keywords:
+            bm25_query = " ".join(llm_keywords)
+            # print(f"LLM Keywords: {bm25_query}")
+        else:
+            bm25_query = query
+
+        tokenized_query = self._tokenize(bm25_query)
         if not tokenized_query:
             bm25_scores = np.zeros(len(self.chunks))
         else:
             bm25_scores = np.array(self.bm25.get_scores(tokenized_query))
 
-        # 2. Dense retrieval
+        classified_domain = self._classify_domain(query)
+        if classified_domain:
+            domain_mask = np.array(
+                [1 if d == classified_domain else 0 for d in self.chunk_domains],
+                dtype=np.float32,
+            )
+            if self.debug:
+                print(f"[Domain Classifier] Predicted domain: {classified_domain}")
+        else:
+            domain_mask = np.ones(len(self.chunks), dtype=np.float32)
+
+        # 2. Dense Retrieval (Cosine Similarity)
         dense_scores = np.zeros(len(self.chunks))
         if self.chunk_embeddings is not None:
             query_emb = self._compute_embeddings([query])
@@ -774,6 +962,9 @@ def create_retriever(chunks, language, config=None, docs_path=None):
         kg_retriever=kg_retriever,
         kg_boost=kg_boost,
         dense_weight=dense_weight,
+        domain_centroids_path=config.get("domain_centroids_path", "database/domain_centroids.npy"),
+        db_embeddings_path=config.get("db_embeddings_path", "database/database_with_embeddings.jsonl"),
+        debug=config.get("debug", False),
     )
 
     retriever._debug_kg = debug_kg

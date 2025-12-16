@@ -4,6 +4,8 @@ ollama:
 
 retrieval:
   debug: false
+  rerank:
+    api_url: "http://localhost:11434/rerank"
 
   # ===== Chunking 設定（語言感知）=====
   chunking:
@@ -19,7 +21,7 @@ retrieval:
   candidate_multiplier: 3.0
   keyword_boost: 0.15
   min_keyword_characters: 3
-  dense_weight:
+  dense_weight: 0.3
     zh: 0.5
     en: 0.7
   
@@ -32,7 +34,7 @@ retrieval:
   min_dense_similarity: 0.22   # cosine 相似度閾值（可之後調）
   
   # ===== Knowledge Graph Retrieval 設定 =====
-  kg_boost: 0
+  kg_boost: 0.5
   kg_path: "My_RAG/kg_output.json"
 
 
