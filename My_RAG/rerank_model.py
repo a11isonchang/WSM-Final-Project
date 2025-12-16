@@ -1,3 +1,4 @@
+'''
 import requests
 import numpy as np
 import os
@@ -171,4 +172,3 @@ class GraphWeightedReranker:
         final_results.sort(key=lambda x: x['metadata']['final_score'], reverse=True)
         
         return final_results[:top_k]
-'''

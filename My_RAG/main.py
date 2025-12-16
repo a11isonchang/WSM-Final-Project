@@ -11,10 +11,11 @@ from generator import generate_answer
 from config import load_config
 import argparse
 
-from chunker import get_query_aware_text_splitter
+import kg_retriever
 
-from advanced_retriever import AdvancedHybridRetriever 
-from subq_engine import try_subquestion_retrieve
+from chunker import get_query_aware_text_splitter
+from advanced_retriever import AdvancedHybridRetriever
+
 
 def get_chunk_config(config: dict, language: str) -> dict:
     """
@@ -25,7 +26,6 @@ def get_chunk_config(config: dict, language: str) -> dict:
     if language and language.startswith("zh"):
         return chunking_cfg["zh"]
 
-    # 預設走英文
     return chunking_cfg.get(language, chunking_cfg.get("en"))
 
 
@@ -57,15 +57,11 @@ def main(query_path, docs_path, language, output_path):
     # 2) Query-aware chunking caches
     print("Preparing query-aware chunking cache...")
 
-    # cache chunks & retrievers by policy key
-    # key = (language, canonical_type, chunk_size_used, chunk_overlap_used)
+    # key = (language, canonical_type, chunk_size, chunk_overlap)
     _chunks_cache = {}
     _retriever_cache = {}
 
     def build_chunks_for_key(splitter, qres):
-        """
-        Build chunks for this splitter policy (once), then cache.
-        """
         chunks = []
         for doc in docs_for_chunking:
             if (
@@ -76,7 +72,6 @@ def main(query_path, docs_path, language, output_path):
                 text = doc["content"]
                 base_metadata = {k: v for k, v in doc.items() if k != "content"}
 
-                # policy metadata for debug
                 base_metadata.update({
                     "query_type_pred": qres.dataset_label,
                     "query_type_canonical": qres.canonical_type,
@@ -84,20 +79,21 @@ def main(query_path, docs_path, language, output_path):
                     "chunk_overlap_used": getattr(splitter, "_chunk_overlap", None),
                 })
 
-                split_docs = splitter.create_documents(texts=[text], metadatas=[base_metadata])
+                split_docs = splitter.create_documents(
+                    texts=[text],
+                    metadatas=[base_metadata]
+                )
+
                 for i, sd in enumerate(split_docs):
                     sd.metadata["chunk_index"] = i
-                    chunks.append({"page_content": sd.page_content, "metadata": sd.metadata})
+                    chunks.append({
+                        "page_content": sd.page_content,
+                        "metadata": sd.metadata
+                    })
 
         return chunks
 
     def get_retriever_for_query(query_text: str):
-        """
-        For each query:
-        1) infer query type → get splitter & qres
-        2) cache chunks by policy
-        3) cache retriever by policy
-        """
         splitter, qres = get_query_aware_text_splitter(
             language=language,
             query_text=query_text,
@@ -115,32 +111,19 @@ def main(query_path, docs_path, language, output_path):
 
         if key not in _chunks_cache:
             _chunks_cache[key] = build_chunks_for_key(splitter, qres)
-        '''
+
         if key not in _retriever_cache:
-            #  retriever 綁定同一組 chunks
-            _retriever_cache[key] = create_retriever(
-                _chunks_cache[key],
-                language,
-                retrieval_config,
-                docs_path
-            )
-        '''
-        if key not in _retriever_cache:
-            # 1. 先建立原本的基礎檢索器 (BM25/Vector)
             base_retriever = create_retriever(
                 _chunks_cache[key],
                 language,
                 retrieval_config,
                 docs_path
             )
-            
-            # 2. 用 AdvancedHybridRetriever 包裝它 (加入 KG 加權 + Cross-Encoder 重排序)
-            # 這會無縫接管後面的 .retrieve() 呼叫
+
             _retriever_cache[key] = AdvancedHybridRetriever(
                 base_retriever,
-                kg_path="My_RAG/kg_output.json"  # 確保你的 KG 檔案路徑正確
+                kg_path="My_RAG/kg_output.json"
             )
-
 
         return _retriever_cache[key], qres, key
 
@@ -149,14 +132,11 @@ def main(query_path, docs_path, language, output_path):
         query_text = query["query"]["content"]
         query_id = query["query"].get("query_id")
 
-        #  ensure prediction exists
         if "prediction" not in query or not isinstance(query["prediction"], dict):
             query["prediction"] = {}
 
-        #  get policy-specific retriever
         retriever, qres, key = get_retriever_for_query(query_text)
 
-        # Retrieve
         retrieved_chunks, retrieval_debug = retriever.retrieve(
             query_text,
             top_k=top_k,
@@ -172,24 +152,12 @@ def main(query_path, docs_path, language, output_path):
                 f"candidates considered: {retrieval_debug.get('candidate_count')}"
             )
 
-            if retrieval_debug.get("keyword_info"):
-                ki = retrieval_debug["keyword_info"]
-                print(f"  Keywords: {ki.get('keywords')} (boost={ki.get('boost')})")
-
             if retrieval_debug.get("kg_boost", 0) > 0:
                 kg_info = retrieval_debug.get("kg_info") or {}
-                entities = kg_info.get("entities_found", [])
-                doc_ids = kg_info.get("related_doc_ids", [])
-                multi_hop = kg_info.get("multi_hop", {}) or {}
                 print(
-                    f"  KG: Found {len(entities)} entities, "
-                    f"{len(doc_ids)} related docs (boost={retrieval_debug.get('kg_boost')})"
+                    f"  KG boost={retrieval_debug.get('kg_boost')} | "
+                    f"entities={len(kg_info.get('entities_found', []))}"
                 )
-                if multi_hop:
-                    mh_cnt = multi_hop.get("multi_hop_entities", 0)
-                    mh_hops = multi_hop.get("max_hops", 0)
-                    if mh_cnt:
-                        print(f"    Multi-hop: {mh_cnt} entities through {mh_hops}-hop relations")
 
             for idx, result in enumerate(retrieval_debug.get("results", []), start=1):
                 meta = result.get("metadata", {})
@@ -197,73 +165,33 @@ def main(query_path, docs_path, language, output_path):
                 score = result.get("score", 0.0)
                 print(f"    #{idx} score={score:.4f} meta={meta} preview={preview}")
 
-        # --- SubQuestionQueryEngine (pseudo evidence) ---
-        # 只在「多跳」或「證據偏薄」時啟用，避免每題都跑導致變慢或不穩
-        ctype = (qres.canonical_type or "").lower()
-        is_multi_hop = bool(getattr(qres, "is_multi_hop", False)) or any(k in ctype for k in ["multi", "hop", "compare", "caus", "reason"])
-
-        evidence_thin = (len(retrieved_chunks) < top_k)
-
-        # 你也可以更嚴格：top1/2 chunk 太短時算薄（可選）
-        # evidence_thin = evidence_thin or (retrieved_chunks and len(retrieved_chunks[0].get("page_content","")) < 120)
-
-        use_subq = is_multi_hop or evidence_thin
-
-        if use_subq:
-            ollama_cfg = config.get("ollama", {}) or {}
-            pseudo = try_subquestion_retrieve(
-                query=query_text,
-                chunks=retrieved_chunks,          # 用「已檢索到的 chunks」做子問題分解
-                language=language,
-                top_k=top_k,
-                ollama_host=ollama_cfg.get("host"),
-                llm_model=ollama_cfg.get("model"),
-            )
-
-            if pseudo:
-                # 把 pseudo evidence 放在前面（讓它更容易被你後面 [:3] 吃到）
-                retrieved_chunks = pseudo + retrieved_chunks
-
-                if debug_retrieval:
-                    print(f"[SubQ] enabled=True | multi_hop={is_multi_hop} thin={evidence_thin} | pseudo_chunks={len(pseudo)}")
-            else:
-                if debug_retrieval:
-                    print(f"[SubQ] enabled=True but pseudo=None | multi_hop={is_multi_hop} thin={evidence_thin}")
-
-
-        # Generate
+        # ===== Generate =====
         gen_k = 3
-        kg_retriever = getattr(retriever, "kg_retriever", None)
         answer = generate_answer(query_text, retrieved_chunks[:gen_k], language, kg_retriever=kg_retriever)
+
+
         query["prediction"]["content"] = answer
 
-        #  references: 存 top-3 chunks 的文本
-        query["prediction"]["references"] = (
-            [ch.get("page_content", "") for ch in retrieved_chunks[:gen_k]]
-            if retrieved_chunks else []
-        )
+        query["prediction"]["references"] = [
+            ch.get("page_content", "") for ch in retrieved_chunks[:gen_k]
+        ]
 
-        # 存 doc_id 方便 debug
         query["prediction"]["reference_doc_ids"] = []
         for ch in retrieved_chunks[:gen_k]:
             doc_id = (ch.get("metadata") or {}).get("doc_id")
             if doc_id is not None:
                 query["prediction"]["reference_doc_ids"].append(doc_id)
 
-        # 去重 doc_id 並保序
         seen = set()
         dedup = []
         for d in query["prediction"]["reference_doc_ids"]:
-            if d in seen:
-                continue
-            seen.add(d)
-            dedup.append(d)
+            if d not in seen:
+                seen.add(d)
+                dedup.append(d)
         query["prediction"]["reference_doc_ids"] = dedup
 
-        # predicted query type（分析用）
         query["prediction"]["query_type_pred"] = qres.dataset_label
         query["prediction"]["query_type_canonical"] = qres.canonical_type
-
 
     save_jsonl(output_path, queries)
     print(f"Predictions saved at '{output_path}'")
@@ -271,10 +199,10 @@ def main(query_path, docs_path, language, output_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--query_path", help="Path to the query file")
-    parser.add_argument("--docs_path", help="Path to the documents file")
-    parser.add_argument("--language", help="Language to filter queries (zh or en)")
-    parser.add_argument("--output", help="Path to the output file")
+    parser.add_argument("--query_path")
+    parser.add_argument("--docs_path")
+    parser.add_argument("--language")
+    parser.add_argument("--output")
     args = parser.parse_args()
 
     main(args.query_path, args.docs_path, args.language, args.output)
