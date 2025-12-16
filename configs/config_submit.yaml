@@ -19,9 +19,9 @@ retrieval:
   # ===== Retrieval 設定 =====
   top_k: 6
   candidate_multiplier: 3.0
-  keyword_boost: 0
+  keyword_boost: 0.15
   min_keyword_characters: 3
-  dense_weight: 0.3
+  dense_weight:
     zh: 0.5
     en: 0.7
   
@@ -41,5 +41,3 @@ retrieval:
   bm25:
     k1: 1.5
     b: 0.70
-
-    
