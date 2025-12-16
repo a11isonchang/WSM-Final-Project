@@ -5,7 +5,7 @@ ollama:
 retrieval:
   debug: false
   rerank:
-    api_url: "http://localhost:11434/rerank"
+    api_url: "http://ollama-gateway:11434/rerank"
 
   # ===== Chunking 設定（語言感知）=====
   chunking:
@@ -19,7 +19,7 @@ retrieval:
   # ===== Retrieval 設定 =====
   top_k: 6
   candidate_multiplier: 3.0
-  keyword_boost: 0.15
+  keyword_boost: 0
   min_keyword_characters: 3
   dense_weight: 0.3
     zh: 0.5

@@ -92,6 +92,12 @@ class BM25Retriever:
         self.db_embeddings = None
         if db_embeddings_path and Path(db_embeddings_path).exists():
             self._load_db_embeddings(db_embeddings_path)
+            
+        # Load part 2 if exists (hardcoded check relative to part 1 for now)
+        if db_embeddings_path:
+            part2_path = Path(db_embeddings_path).parent / "database_with_embeddings_part2.jsonl"
+            if part2_path.exists():
+                self._load_db_embeddings(str(part2_path))
 
         # ===== Embedding Model =====
         if self.embedding_provider == "ollama":
@@ -514,22 +520,33 @@ class BM25Retriever:
 
     def _load_db_embeddings(self, path):
         try:
-            embeddings = []
-            self.db_entries = []
+            new_embeddings = []
+            if not hasattr(self, 'db_entries') or self.db_entries is None:
+                self.db_entries = []
+            
+            # Load entries
             with open(path, 'r', encoding='utf-8') as f:
                 for line in f:
                     entry = json.loads(line)
                     if "embedding" in entry and entry["embedding"]:
                         self.db_entries.append(entry)
-                        embeddings.append(entry["embedding"])
-            if embeddings:
-                self.db_embeddings = np.array(embeddings).astype(np.float32)
-                # Normalize for cosine similarity
-                norms = np.linalg.norm(self.db_embeddings, axis=1, keepdims=True)
-                self.db_embeddings = self.db_embeddings / np.maximum(norms, 1e-9)
-                print(f"Loaded {len(embeddings)} database embeddings for few-shot learning.")
+                        new_embeddings.append(entry["embedding"])
+            
+            # Update numpy array
+            if new_embeddings:
+                new_emb_arr = np.array(new_embeddings).astype(np.float32)
+                # Normalize new embeddings
+                norms = np.linalg.norm(new_emb_arr, axis=1, keepdims=True)
+                new_emb_arr = new_emb_arr / np.maximum(norms, 1e-9)
+                
+                if hasattr(self, 'db_embeddings') and self.db_embeddings is not None:
+                    self.db_embeddings = np.concatenate((self.db_embeddings, new_emb_arr), axis=0)
+                else:
+                    self.db_embeddings = new_emb_arr
+                    
+                print(f"Loaded {len(new_embeddings)} database embeddings from {path}. Total: {len(self.db_entries)}")
         except Exception as e:
-            print(f"Error loading database embeddings: {e}")
+            print(f"Error loading database embeddings from {path}: {e}")
 
     def _extract_keywords_llm(self, query: str) -> List[str]:
         if not self.ollama_client:
