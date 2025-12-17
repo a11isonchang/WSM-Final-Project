@@ -4,8 +4,6 @@ ollama:
 
 retrieval:
   debug: false
-  rerank:
-    api_url: "http://ollama-gateway:11434/rerank"
 
   # ===== Chunking 設定（語言感知）=====
   chunking:
@@ -22,7 +20,7 @@ retrieval:
   keyword_boost: 0.15
   min_keyword_characters: 3
   dense_weight:
-    zh: 0.5
+    zh: 0.25
     en: 0.7
   
   # Embedding Model Settings
@@ -41,3 +39,8 @@ retrieval:
   bm25:
     k1: 1.5
     b: 0.70
+
+  rerank:
+    api_url: "http://ollama-gateway:11434/rerank"
+
+    

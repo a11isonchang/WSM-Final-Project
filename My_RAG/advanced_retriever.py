@@ -1,6 +1,6 @@
 import json
 import jieba
-# 修正 1: 引用正確的類別名稱
+# 引用新的 Reranker
 from rerank_model import GraphWeightedReranker
 
 class AdvancedHybridRetriever:
@@ -59,18 +59,19 @@ class AdvancedHybridRetriever:
         if not candidates:
             return [], debug_info
 
+        # [DISABLED RERANKER]
         # 計算 KG Boost
-        boost_map = self._get_entity_boost_map(query)
+        # boost_map = self._get_entity_boost_map(query)
         
         # 修正 2: 使用正確的參數名稱 kg_boost_map
-        try:
-            final_docs = self.reranker.rerank(query, candidates, top_k=top_k, kg_boost_map=boost_map)
-        except Exception as e:
-            print(f"[Reranker Warning] Reranking failed (using base results): {e}")
-            final_docs = candidates[:top_k]
+        # try:
+        #     final_docs = self.reranker.rerank(query, candidates, top_k=top_k, kg_boost_map=boost_map)
+        # except Exception as e:
+        #     print(f"[Reranker Warning] Reranking failed (using base results): {e}")
+        #     final_docs = candidates[:top_k]
         
         # Fallback: Just return top_k from base retriever
-        # final_docs = candidates[:top_k]
+        final_docs = candidates[:top_k]
 
         # 修正 3: 更新 debug_info 並回傳 tuple
         # 我們需要把重排序後的分數更新到 debug 資訊中，這樣 main.py 的 print 才會顯示正確分數
@@ -79,7 +80,7 @@ class AdvancedHybridRetriever:
             new_debug_results.append({
                 "metadata": doc.get("metadata", {}),
                 "preview": doc.get("page_content", "")[:160].replace("\n", " "),
-                "score": doc.get("metadata", {}).get("score", 0.0) # Use base score
+                "score": doc.get("metadata", {}).get("final_score", 0.0) # 取重排序後的分數
             })
         
         debug_info["results"] = new_debug_results
