@@ -61,34 +61,21 @@ def main(query_path, docs_path, language, output_path):
         query_text = query["query"]["content"]
         query_id = query["query"].get("query_id")
 
-        retrieved_chunks, retrieval_debug = retriever.retrieve(
+        retrieved_chunks = retriever.retrieve(
             query_text,
-            top_k=top_k,
-            query_id=query_id
+            top_k=top_k
         )
 
         if debug_retrieval:
             print(f"\n[Retrieval Debug] Query ID {query_id}: {query_text}")
-            print(
-                f"  Language: {retrieval_debug['language']} | "
-                f"top_k: {retrieval_debug['top_k']} | "
-                f"candidates considered: {retrieval_debug['candidate_count']}"
-            )
-
-            if retrieval_debug.get("keyword_info"):
-                print(
-                    f"  Keywords: {retrieval_debug['keyword_info']['keywords']} "
-                    f"(boost={retrieval_debug['keyword_info']['boost']})"
-                )
-
-            for idx, result in enumerate(retrieval_debug["results"], start=1):
-                meta = result.get("metadata", {})
-                preview = result.get("preview", "").replace("\n", " ")[:160]
-                score = result.get("score", 0.0)
-                print(f"    #{idx} score={score:.4f} meta={meta} preview={preview}")
+            print(f"  Language: {language} | top_k: {top_k} | chunks retrieved: {len(retrieved_chunks)}")
+            for idx, chunk in enumerate(retrieved_chunks[:5], start=1):
+                meta = chunk.get("metadata", {})
+                preview = chunk.get("page_content", "").replace("\n", " ")[:160]
+                print(f"    #{idx} meta={meta} preview={preview}")
 
         # 5. Generate Answer
-        answer = generate_answer(query_text, retrieved_chunks, language)
+        answer = generate_answer(query_text, retrieved_chunks)
 
         query["prediction"]["content"] = answer
         query["prediction"]["references"] = (
