@@ -523,7 +523,14 @@ class KEYPOINT_METRICS:
 
     def __init__(self, use_openai = True, model='openai/gpt-oss-20b', version='v1'):
         # 初始化任何必要的属性
-        self.client = Groq()
+        # 检查 GROQ_API_KEY 环境变量
+        api_key = os.getenv('GROQ_API_KEY')
+        if not api_key:
+            raise ValueError(
+                "GROQ_API_KEY environment variable is not set. "
+                "Please set it using: export GROQ_API_KEY='your-api-key'"
+            )
+        self.client = Groq(api_key=api_key)
         self.use_openai = use_openai
         self.model = model
         self.version = version
@@ -548,7 +555,18 @@ class KEYPOINT_METRICS:
                         responses.append(parsed_response)
                         break
                     except Exception as e:
-                        print(f"Error processing key point {kp}: {str(e)}")
+                        error_msg = str(e)
+                        # 检查是否是 403 错误
+                        if "403" in error_msg or "Forbidden" in error_msg:
+                            print(f"Error processing key point {kp}: {error_msg}")
+                            print("This is likely due to:")
+                            print("  1. Missing or invalid GROQ_API_KEY environment variable")
+                            print("  2. API key has expired or been revoked")
+                            print("  3. API quota/rate limit exceeded")
+                            print("  4. Insufficient permissions for the API key")
+                            print("Please check your GROQ_API_KEY and try again.")
+                        else:
+                            print(f"Error processing key point {kp}: {error_msg}")
                         time.sleep(3)
             
             # 计算满足率
@@ -566,7 +584,18 @@ class KEYPOINT_METRICS:
                     parsed_response = self._parse_model_response_v1(response)
                     break
                 except Exception as e:
-                    print(f"Error processing key points: {str(e)}")
+                    error_msg = str(e)
+                    # 检查是否是 403 错误
+                    if "403" in error_msg or "Forbidden" in error_msg:
+                        print(f"Error processing key points: {error_msg}")
+                        print("This is likely due to:")
+                        print("  1. Missing or invalid GROQ_API_KEY environment variable")
+                        print("  2. API key has expired or been revoked")
+                        print("  3. API quota/rate limit exceeded")
+                        print("  4. Insufficient permissions for the API key")
+                        print("Please check your GROQ_API_KEY and try again.")
+                    else:
+                        print(f"Error processing key points: {error_msg}")
                     time.sleep(3)
 
             # Calculate ratios based on JSON
@@ -605,7 +634,18 @@ class KEYPOINT_METRICS:
                         }
                     break
                 except Exception as e:
-                    print(f"Error processing key points in v2: {str(e)}")
+                    error_msg = str(e)
+                    # 检查是否是 403 错误
+                    if "403" in error_msg or "Forbidden" in error_msg:
+                        print(f"Error processing key points in v2: {error_msg}")
+                        print("This is likely due to:")
+                        print("  1. Missing or invalid GROQ_API_KEY environment variable")
+                        print("  2. API key has expired or been revoked")
+                        print("  3. API quota/rate limit exceeded")
+                        print("  4. Insufficient permissions for the API key")
+                        print("Please check your GROQ_API_KEY and try again.")
+                    else:
+                        print(f"Error processing key points in v2: {error_msg}")
                     time.sleep(3)
 
             parsed_response = self._parse_model_response_v2(response, len(key_points))

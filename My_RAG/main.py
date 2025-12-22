@@ -7,6 +7,9 @@ from config import load_config
 import argparse
 
 
+import kg_retriever
+
+
 def get_chunk_config(config: dict, language: str) -> dict:
     """
     根據語言取得對應的 chunking 設定
@@ -24,7 +27,6 @@ def main(query_path, docs_path, language, output_path):
     config = load_config()
     retrieval_config = config.get("retrieval", {})
 
-    # ✅ NEW：從 chunking 設定取值
     chunk_cfg = get_chunk_config(config, language)
     chunk_size = chunk_cfg["chunk_size"]
     chunk_overlap = chunk_cfg["chunk_overlap"]
@@ -75,7 +77,12 @@ def main(query_path, docs_path, language, output_path):
                 print(f"    #{idx} meta={meta} preview={preview}")
 
         # 5. Generate Answer
-        answer = generate_answer(query_text, retrieved_chunks)
+        answer = generate_answer(
+            query_text,
+            retrieved_chunks,
+            language,
+            kg_retriever=kg_retriever
+        )
 
         query["prediction"]["content"] = answer
         query["prediction"]["references"] = (
