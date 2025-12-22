@@ -4,6 +4,11 @@ ollama:
 
 retrieval:
   debug: false
+  type: hybrid # Add this line for hybrid retriever
+  hybrid_weights: [0.5, 0.5] # Add weights for ensemble retriever
+  embedding_model_path: "My_RAG/models/all_minilm_l6"
+  embedding_provider: "local"
+  ollama_host: "http://ollama-gateway:11434"
 
   # ===== Chunking 設定（語言感知）=====
   chunking:

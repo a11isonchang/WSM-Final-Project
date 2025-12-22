@@ -21,3 +21,4 @@ langchain-text-splitters
 langchain-core
 requests
 groq
+setuptools==69.0.3
