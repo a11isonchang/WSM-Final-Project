@@ -1,3 +1,9 @@
+import os
+
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 from tqdm import tqdm
 from utils import load_jsonl, save_jsonl
 from chunker import chunk_documents
@@ -8,6 +14,9 @@ import argparse
 
 
 import kg_retriever
+
+from chunker import get_query_aware_text_splitter
+from advanced_retriever import AdvancedHybridRetriever 
 
 
 def get_chunk_config(config: dict, language: str) -> dict:
@@ -54,19 +63,61 @@ def main(query_path, docs_path, language, output_path):
     print(f"Created {len(chunks)} chunks.")
 
     # 3. Create Retriever
-    print("Creating retriever...")
-    retriever = create_retriever(chunks, language, retrieval_config)
-    print("Retriever created successfully.")
+    print("Preparing retriever cache...")
+    _chunks_cache = {}
+    _retriever_cache = {}
+
+    def build_chunks_for_key(splitter, qres):
+        # ✅ 不改 chunk 邏輯：直接回傳你剛剛 chunk_documents 產生的 chunks
+        return chunks
+
+    def get_retriever_for_query(query_text: str):
+        splitter, qres = get_query_aware_text_splitter(
+            language=language,
+            query_text=query_text,
+            base_chunk_size=chunk_size,
+            base_chunk_overlap=chunk_overlap,
+            query_context=None,
+        )
+
+        key = (
+            language,
+            qres.canonical_type,
+            getattr(splitter, "_chunk_size", None),
+            getattr(splitter, "_chunk_overlap", None),
+        )
+
+        if key not in _chunks_cache:
+            _chunks_cache[key] = build_chunks_for_key(splitter, qres)
+
+        if key not in _retriever_cache:
+            base_retriever = create_retriever(
+                _chunks_cache[key],
+                language,
+                retrieval_config,
+            )
+            _retriever_cache[key] = AdvancedHybridRetriever(
+                base_retriever,
+                kg_path="My_RAG/kg_output.json",
+            )
+
+        return _retriever_cache[key], qres, key
 
     # 4. Process Queries
     for query in tqdm(queries, desc="Processing Queries"):
         query_text = query["query"]["content"]
         query_id = query["query"].get("query_id")
 
-        retrieved_chunks = retriever.retrieve(
+        if "prediction" not in query or not isinstance(query["prediction"], dict):
+            query["prediction"] = {}
+
+        retriever, qres, key = get_retriever_for_query(query_text)
+
+        ret = retriever.retrieve(
             query_text,
-            top_k=top_k
+            top_k=top_k,
         )
+        retrieved_chunks = ret[0] if isinstance(ret, tuple) else ret
 
         if debug_retrieval:
             print(f"\n[Retrieval Debug] Query ID {query_id}: {query_text}")

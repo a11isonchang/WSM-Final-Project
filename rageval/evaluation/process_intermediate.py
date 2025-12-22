@@ -75,7 +75,41 @@ def process_folder(folder_path: str, output_file: str, metric_list: List[str]):
     # 【新增】另外輸出成 CSV
     #  CSV 檔名：把 .json 換成 .csv（例如 final_result.json -> final_result.csv）
     csv_output_file = output_file.replace('.json', '.csv')
-        
+    if results:
+       # 決定欄位順序：
+       # 先用 metric_list，再加上可能出現的衍生指標
+       derived_metrics = [
+           'Words_F1',
+           'Sentences_F1',
+           'factual_score',
+           'Generation_Total_Score',
+           'Retrieval_Total_Score',
+       ]
+
+
+       # 收集所有實際出現過的 metrics（避免有的檔案沒有某個欄位）
+       all_metrics = []
+       for m in metric_list + derived_metrics:
+           if any(m in avg for avg in results.values()):
+               all_metrics.append(m)
+
+
+       fieldnames = ['filename'] + all_metrics
+
+
+       with open(csv_output_file, 'w', encoding='utf-8', newline='') as cf:
+           writer = csv.DictWriter(cf, fieldnames=fieldnames)
+           writer.writeheader()
+
+
+           for fname, avg_dict in results.items():
+               row = {'filename': fname}
+               for m in all_metrics:
+                   row[m] = avg_dict.get(m, "")
+               writer.writerow(row)
+
+
+       print(f"CSV results saved to {csv_output_file}")
     # Print Summary Table
     print("\n" + "="*80)
     print(f"{'File':<30} | {'Gen Score':<10} | {'Ret Score':<10} | {'Factual':<10} | {'ROUGE-L':<10}")
