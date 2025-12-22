@@ -920,30 +920,35 @@ def create_retriever(chunks, language, config=None, docs_path=None):
 
     bm25_cfg = config.get("bm25", {})
 
-    # KG retriever (for ToG reasoning)
+    # KG retriever (for ToG reasoning) (ONLY for English)
     kg_retriever_obj = None
     debug_kg = config.get("debug_kg", False)
     kg_path = config.get("kg_path", "My_RAG/kg_output.json")
 
-    # Always try to initialize KG retriever for ToG reasoning
-    try:
-        max_hops = config.get("kg_max_hops", 2)
-        kg_docs_path = docs_path or config.get("docs_path", "dragonball_dataset/dragonball_docs.jsonl")
+    use_kg = (language or "en").lower().startswith("en")
 
-        kg_retriever_obj = create_kg_retriever(
-            kg_path=kg_path,
-            language=language,
-            max_hops=max_hops,
-            docs_path=kg_docs_path,
-        )
-        print(f"✓ KG retriever initialized for ToG reasoning: max_hops={max_hops}, path={kg_path}")
+    if use_kg:
+        try:
+            max_hops = config.get("kg_max_hops", 2)
+            kg_docs_path = docs_path or config.get("docs_path", "dragonball_dataset/dragonball_docs.jsonl")
+
+            kg_retriever_obj = create_kg_retriever(
+                kg_path=kg_path,
+                language=language,
+                max_hops=max_hops,
+                docs_path=kg_docs_path,
+            )
+            print(f"✓ KG retriever initialized (EN only): max_hops={max_hops}, path={kg_path}")
+            if debug_kg:
+                print("  [KG Debug mode enabled]")
+        except Exception as e:
+            print(f"✗ Warning: Failed to initialize KG retriever: {e}")
+            import traceback
+            traceback.print_exc()
+            kg_retriever_obj = None
+    else:
         if debug_kg:
-            print("  [KG Debug mode enabled]")
-    except Exception as e:
-        print(f"✗ Warning: Failed to initialize KG retriever: {e}")
-        import traceback
-        traceback.print_exc()
-        kg_retriever_obj = None
+            print(f"  [KG disabled] language={language}")
 
     retriever = BM25Retriever(
         chunks,
