@@ -46,6 +46,13 @@ class BM25Retriever:
         haystack = text if self.language == "zh" else text.lower()
         return sum(1 for kw in keywords if kw and kw in haystack)
 
+    def extract_keywords_from_query(self, query: str) -> List[str]:
+        """
+        Simple keyword extraction: extract words longer than 3 characters after preprocessing.
+        """
+        tokens = self._tokenize(query)
+        return [token for token in tokens if len(token) > 3]
+
     def retrieve(self, query, top_k=5):
         if not self.chunks:
             return []
