@@ -1,13 +1,13 @@
 import json
 import jieba
 # 修正 1: 引用正確的類別名稱
-# from rerank_model import GraphWeightedReranker
+from rerank_model import GraphWeightedReranker
 
 class AdvancedHybridRetriever:
     def __init__(self, original_retriever, kg_path="My_RAG/kg_output.json"):
         self.base_retriever = original_retriever
         # 修正 1: 實例化正確的類別
-       #self.reranker = GraphWeightedReranker()
+        self.reranker = GraphWeightedReranker()
         self.kg_index = self._load_kg_index(kg_path)
         print("AdvancedHybridRetriever initialized with KG boosting.")
 
@@ -66,22 +66,7 @@ class AdvancedHybridRetriever:
         
         # 修正 2: 使用正確的參數名稱 kg_boost_map
         try:
-#            final_docs = self.reranker.rerank(query, candidates, top_k=top_k, kg_boost_map=boost_map)
-            # 使用 KG boost 微調 base score（不 rerank、不改架構）
-            for doc in candidates:
-                doc_id = str(doc.get("metadata", {}).get("doc_id"))
-                if doc_id in boost_map:
-                    base_score = doc.get("metadata", {}).get("score", 0.0)
-                    doc["metadata"]["score"] = base_score + boost_map[doc_id]
-
-            # 重新依 score 排序
-            candidates = sorted(
-                candidates,
-                key=lambda d: d.get("metadata", {}).get("score", 0.0),
-                reverse=True
-            )
-
-            final_docs = candidates[:top_k]
+           final_docs = self.reranker.rerank(query, candidates, top_k=top_k, kg_boost_map=boost_map)
         except Exception as e:
             print(f"[Reranker Warning] Reranking failed (using base results): {e}")
             final_docs = candidates[:top_k]
