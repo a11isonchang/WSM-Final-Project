@@ -112,6 +112,7 @@ import torch
 from sentence_transformers import CrossEncoder
 import numpy as np
 import os
+from config import load_config
 
 class GraphWeightedReranker:
     def __init__(self, model_path="My_RAG/models/bge-reranker-v2-m3", device=None):
@@ -128,6 +129,11 @@ class GraphWeightedReranker:
             model_path = "BAAI/bge-reranker-v2-m3"
             
         self.model = CrossEncoder(model_path, device=self.device, max_length=1024)
+        
+        # Load KG boost factor from config
+        config = load_config()
+        self.kg_boost_factor = config.get("retrieval", {}).get("kg_boost_factor", 2.0)
+        print(f"Initialized GraphWeightedReranker with kg_boost_factor={self.kg_boost_factor}")
 
     def rerank(self, query, docs, top_k=5, kg_boost_map=None):
         """
@@ -155,8 +161,8 @@ class GraphWeightedReranker:
             doc_id = str(doc.get('metadata', {}).get('doc_id', ''))
             boost = 0.0
             if kg_boost_map and doc_id in kg_boost_map:
-                # 這裡的 2.0 係數是經驗值，可以根據 KG 的可信度調整
-                boost = kg_boost_map[doc_id] * 2.0 
+                # 使用配置的係數
+                boost = kg_boost_map[doc_id] * self.kg_boost_factor
             
             # 使用 Sigmoid 歸一化模型分數以便與 Boost 相加 (可選，這裡直接相加更強勢)
             final_score = base_score + boost

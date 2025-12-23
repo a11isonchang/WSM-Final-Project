@@ -24,6 +24,10 @@ retrieval:
   candidate_multiplier: 0
   keyword_boost: 0
   min_keyword_characters: 3
+  
+  # Hybrid / KG Reranker params
+  kg_boost_factor: 2.0
+  initial_k: 50
 
   bm25:
     k1: 1.5

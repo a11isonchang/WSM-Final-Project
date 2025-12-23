@@ -99,6 +99,7 @@ def main(query_path, docs_path, language, output_path):
             _retriever_cache[key] = AdvancedHybridRetriever(
                 base_retriever,
                 kg_path="My_RAG/kg_output.json",
+                language=language
             )
 
         return _retriever_cache[key], qres, key
